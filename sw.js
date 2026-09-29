@@ -1,6 +1,6 @@
 /* FieldCam service worker: caches the app itself so it opens without signal.
    Photos and uploads never pass through this cache. */
-const CACHE = 'fieldcam-v4.1.0';
+const CACHE = 'fieldcam-v4.1.2';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'app.js', 'manifest.webmanifest',
   'fonts/RobotoCondensed.ttf', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

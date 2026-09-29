@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.1.0';
+const APP_VERSION = '4.1.2';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -773,7 +773,7 @@ async function onJobListClick(e) {
   $('tpJobNo').textContent = job.job_number;
   $('tpSite').textContent = job.site_name;
   $('submitBox').hidden = !GAS_URL;
-  $('saveLocal').checked = !!currentDetails().save_local;   // per job, remembered on this phone; off by default
+  if (job.save_local) { try { ANDROID_APP?.askStoragePermission?.(); } catch {} }   // older Android versions need it
   pushNav(); show('typePick');
 }
 async function submitJob() {
@@ -826,6 +826,7 @@ function renderJobSheet() {
   $('jLoc').value = j?.location_name || '';
   $('jActiveRow').hidden = !j;
   $('jActive').checked = j ? !!j.active : true;
+  $('jSaveLocal').checked = !!j?.save_local;   // off by default
   $('jobErr').textContent = '';
   updateFolderHint();
 }
@@ -838,7 +839,7 @@ async function saveJob(e) {
   const j = state.editingJob;
   $('jobSave').disabled = true; $('jobErr').textContent = '';
   try {
-    const r = await api('admin.php', { json: { action: 'job_save', id: j?.id || '', job_number: $('jNo').value, site_name: $('jSite').value, location_name: $('jLoc').value } });
+    const r = await api('admin.php', { json: { action: 'job_save', id: j?.id || '', job_number: $('jNo').value, site_name: $('jSite').value, location_name: $('jLoc').value, save_local: $('jSaveLocal').checked } });
     if (!r.ok) { $('jobErr').textContent = r.error; return; }
     if (j && j.active !== $('jActive').checked) {
       const r2 = await api('admin.php', { json: { action: 'job_active', id: j.id, active: $('jActive').checked } });
@@ -853,6 +854,7 @@ async function saveJob(e) {
 
 /* ======================= Lab / Field choice ======================= */
 function pickType(type) {
+  askMotionPermission();                       // iPhone: needed to notice the phone is held sideways
   state.type = type;
   pushNav();
   enterCamera();
@@ -942,19 +944,46 @@ function renderGps(msg) {
 }
 /* ======================= orientation (photos landscape only) ======================= */
 let heldSideways = null;          // from the motion sensor; null = unknown
+/* Which way the phone is turned: +1 = turned left (top of the phone points left), -1 = turned right,
+   0 = upright. Lying flat (pointing down at the ground) keeps the last value. iPhones report the
+   sensor with the opposite sign, so it is flipped there. */
+let sideDir = 0;
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 window.addEventListener('devicemotion', (e) => {
   const g = e.accelerationIncludingGravity;
   if (!g || g.x == null || g.y == null) return;
   const ax = Math.abs(g.x), ay = Math.abs(g.y);
-  if (ax > 6 && ax > ay + 2) heldSideways = true;
-  else if (ay > 6 && ay > ax + 2) heldSideways = false;
+  const prev = sideDir;
+  if (ax > 6 && ax > ay + 2) { heldSideways = true; sideDir = (IOS ? -g.x : g.x) > 0 ? 1 : -1; }
+  else if (ay > 6 && ay > ax + 2) { heldSideways = false; sideDir = 0; }
+  if (prev !== sideDir && state.screen === 'cam') { updateOrientation(); drawPreview(); }
 });
+/** iPhone asks once for "Motion & Orientation" — must be called from a tap. */
+function askMotionPermission() {
+  try { if (typeof DeviceMotionEvent?.requestPermission === 'function') DeviceMotionEvent.requestPermission().catch(() => {}); } catch {}
+}
 function frameIsLandscape() { const v = $('video'); return v.videoWidth > v.videoHeight; }
+/** Camera-app style: phone held sideways while the screen stays upright → the photo is turned to landscape. */
+function sideCapture() { return state.mode === 'photo' && !!$('video').videoWidth && !frameIsLandscape() && sideDir !== 0; }
 /** Only FIELD photos must be landscape; Laboratory photos and all videos can be either way. */
-function photoBlocked() { return state.type === 'Field' && state.mode === 'photo' && !!$('video').videoWidth && !frameIsLandscape(); }
+function photoBlocked() { return state.type === 'Field' && state.mode === 'photo' && !!$('video').videoWidth && !frameIsLandscape() && !sideCapture(); }
+/** Turn an upright (portrait) camera picture into the landscape photo the user is holding:
+ *  dir +1 (turned left) → rotate 90° anticlockwise; dir -1 (turned right) → 90° clockwise. */
+function rotateSideways(img, dir) {
+  const w = img.width, h = img.height, c = document.createElement('canvas');
+  c.width = h; c.height = w;
+  const ctx = c.getContext('2d');
+  if (dir > 0) { ctx.translate(0, w); ctx.rotate(-Math.PI / 2); } else { ctx.translate(h, 0); ctx.rotate(Math.PI / 2); }
+  ctx.drawImage(img, 0, 0);
+  return c;
+}
 function updateOrientation() {
   if (state.screen !== 'cam') return;
-  const blocked = photoBlocked();
+  const blocked = photoBlocked(), side = sideCapture();
+  $('sideBadge').hidden = !side || !!openSheetId || !$('review').hidden;
+  const cam = $('cam');
+  cam.classList.toggle('side-left', side && sideDir > 0);    // turn the small buttons so they read the right way up
+  cam.classList.toggle('side-right', side && sideDir < 0);
   $('rotateHint').hidden = !blocked || !!openSheetId || !$('review').hidden || !$('camError').hidden;
   $('shutter').classList.toggle('blocked', blocked);
   $('shutter').setAttribute('aria-disabled', blocked);
@@ -1045,7 +1074,15 @@ function drawPreview() {
   if (state.screen !== 'cam' || !state.job) return;
   const c = $('preview'), ctx = c.getContext('2d');
   ctx.clearRect(0, 0, c.width, c.height);
-  drawStamp(ctx, c.width, c.height, buildStamp(state.type, new Date(), freshGps()));
+  const stamp = buildStamp(state.type, new Date(), freshGps());
+  if (!sideCapture()) { drawStamp(ctx, c.width, c.height, stamp); return; }
+  // Phone held sideways on an upright screen: draw the stamp as it will sit on the landscape photo, turned to match
+  const off = document.createElement('canvas'); off.width = c.height; off.height = c.width;
+  drawStamp(off.getContext('2d'), off.width, off.height, stamp);
+  ctx.save();
+  if (sideDir > 0) { ctx.translate(c.width, 0); ctx.rotate(Math.PI / 2); } else { ctx.translate(0, c.height); ctx.rotate(-Math.PI / 2); }
+  ctx.drawImage(off, 0, 0);
+  ctx.restore();
 }
 
 async function grabFrame() {
@@ -1107,9 +1144,13 @@ async function onShutter() {
     navigator.vibrate?.(30);
     try { await document.fonts?.load(`600 20px ${STAMP_FONT}`); } catch {}
     const when = new Date(), gps = freshGps();
+    const turn = sideCapture() ? sideDir : 0;                 // phone held sideways, screen upright
     const raw = await grabFrame();
     let bmp = await toBitmap(raw);
-    if (state.type === 'Field' && bmp.height > bmp.width) {   // camera returned an upright still — use the (landscape) live frame
+    if (turn && bmp.height > bmp.width) {
+      // Camera-app style: turn the upright picture into the landscape photo the user is holding
+      const rotated = rotateSideways(bmp, turn); bmp.close?.(); bmp = rotated;
+    } else if (state.type === 'Field' && bmp.height > bmp.width) {   // camera returned an upright still — use the (landscape) live frame
       bmp.close?.(); bmp = await toBitmap(await videoFrame());
       if (bmp.height > bmp.width) { bmp.close?.(); throw new Error('Turn your phone sideways — field photos are landscape only'); }
     }
@@ -1177,7 +1218,8 @@ async function saveToPhone(blob, name) {
   return true;
 }
 async function savePhoto(blob, meta) {
-  if (meta.type === 'Field' && currentDetails().save_local) {
+  // Admin switched on "Save Field photos on phones too" for this job (New / Edit job)
+  if (meta.type === 'Field' && state.job?.save_local) {
     try { await saveToPhone(blob, localName(meta)); } catch (e) { toast('Could not save on the phone', true); }
   }
   const buf = await blob.arrayBuffer();
@@ -1642,13 +1684,6 @@ function wire() {
   $('changeNasBtn').addEventListener('click', () => ANDROID_APP?.changeServer());
   $('themeSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-theme]'); if (b) applyTheme(b.dataset.theme); });
   $('submitJobBtn').addEventListener('click', submitJob);
-  $('saveLocal').addEventListener('change', () => {
-    const d = currentDetails(); d.save_local = $('saveLocal').checked; kvSet('jobDetails', state.jobDetails);
-    if (d.save_local) {
-      try { ANDROID_APP?.askStoragePermission?.(); } catch {}                 // older Android versions need it
-      toast('Field photos of this job will also be saved on this phone');
-    }
-  });
   $('jobTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]'); if (!b) return;
     state.jobTab = b.dataset.tab; renderJobs();

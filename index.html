@@ -103,11 +103,6 @@
         <span>Logo, date &amp; time, coordinates, location, site, your text</span>
       </button>
     </div>
-    <!-- per job, per phone; off by default -->
-    <label class="switch-row" id="saveLocalRow">
-      <span><b>Also save Field photos on this phone</b><small>For this job only. They still upload to <span data-store="the">Google Drive</span> as usual.</small></span>
-      <span class="switch"><input type="checkbox" id="saveLocal" aria-label="Also save Field photos on this phone"><i></i></span>
-    </label>
     <div class="submit-box" id="submitBox" hidden>
       <p class="muted small">All tests for this job finished?</p>
       <button class="btn wide submit-btn" id="submitJobBtn" type="button">✓ Submit job — all tests done</button>
@@ -177,6 +172,8 @@
   </div>
 
   <div class="rec-timer" id="recTimer" hidden><i></i><span>00:00</span></div>
+  <!-- phone held sideways while the screen stays upright: the photo is saved as landscape -->
+  <div class="side-badge" id="sideBadge" hidden>✓ Landscape photo</div>
 
   <footer class="bottombar">
     <div class="mode-switch" role="tablist">
@@ -267,6 +264,11 @@
     <label>Site name <b class="req">*</b><input id="jSite" required autocomplete="off"></label>
     <label>Location name <b class="req">*</b><input id="jLoc" required autocomplete="off" placeholder="e.g. Madhapar, Rajkot, Gujarat"></label>
     <p class="muted small" id="jFolder"></p>
+    <!-- admin's per-job choice (staff never see it); off by default -->
+    <label class="switch-row" id="jSaveLocalRow">
+      <span><b>Save Field photos on phones too</b><small>Off: photos go only to <span data-store="the">Google Drive</span>. On: this job's Field photos are also kept in the gallery of the phone that takes them (Pictures › FieldCam).</small></span>
+      <span class="switch"><input type="checkbox" id="jSaveLocal" aria-label="Save Field photos on phones too"><i></i></span>
+    </label>
     <label class="check" id="jActiveRow"><input type="checkbox" id="jActive"> Show this job to staff</label>
     <p id="jobErr" class="err" role="alert"></p>
     <button type="submit" class="btn primary wide" id="jobSave">Create job</button>
