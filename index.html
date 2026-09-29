@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>FieldCam</title>
+  <meta name="theme-color" content="#0e1113">
+  <meta name="color-scheme" content="dark light">
+  <script>
+    /* Apply the saved theme before the page paints (System default / Dark / Light, kept per phone). */
+    try { document.documentElement.dataset.theme = localStorage.getItem('fc-theme') || 'system'; } catch (e) { document.documentElement.dataset.theme = 'system'; }
+  </script>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="FieldCam">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<section id="login" class="screen" hidden>
+  <div class="login-card">
+    <img src="icons/icon-192.png" alt="" class="login-logo" id="loginLogo">
+    <h1>FieldCam</h1>
+    <form id="loginForm" autocomplete="on">
+      <label id="nasRow" hidden>NAS address
+        <input id="loginNas" type="url" inputmode="url" autocapitalize="none" autocorrect="off" placeholder="https://yourname.myqnapcloud.com:8081/fieldcam/">
+      </label>
+      <label>User name <input id="loginUser" name="username" autocapitalize="none" autocorrect="off" required></label>
+      <label>PIN <input id="loginPin" name="pin" type="password" inputmode="numeric" required></label>
+      <button type="submit" class="btn primary wide" id="loginBtn">Log in</button>
+      <p id="loginErr" class="err" role="alert"></p>
+      <p id="apkRow" class="muted small" hidden><a href="android/FieldCam.apk" download>Get the Android app</a></p>
+    </form>
+    <!-- shared staff login: ask once per phone who is taking the photos -->
+    <form id="nameForm" hidden>
+      <h2>Who is taking photos on this phone?</h2>
+      <p class="muted">You're using the shared staff login. Your name is saved with every photo and video (not printed on them).</p>
+      <label>Your name <input id="photographerName" autocomplete="name" required></label>
+      <button type="submit" class="btn primary wide">Continue</button>
+    </form>
+  </div>
+</section>
+
+<!-- ================= JOB LIST ================= -->
+<section id="jobs" class="screen page" hidden>
+  <header class="page-head">
+    <div>
+      <h1 id="jobsTitle">Jobs</h1>
+      <p class="muted small" id="jobsWho"></p>
+    </div>
+    <div class="head-actions">
+      <button class="icon-btn" id="jobsQueueBtn" aria-label="Upload queue">
+        <svg viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4"/></svg>
+        <span class="badge" data-queue-badge hidden>0</span>
+      </button>
+      <button class="icon-btn" id="jobsSettingsBtn" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+      </button>
+    </div>
+  </header>
+  <div class="page-body">
+    <!-- admins only: open jobs and submitted (completed) jobs are two separate lists -->
+    <div class="seg job-tabs" id="jobTabs" role="tablist" hidden>
+      <button type="button" role="tab" data-tab="open" aria-checked="true">Jobs</button>
+      <button type="button" role="tab" data-tab="done" aria-checked="false">Completed Jobs</button>
+    </div>
+    <div class="search-row">
+      <input id="jobSearch" type="search" placeholder="Search jobs…" autocomplete="off">
+      <button class="btn primary" id="newJobBtn" hidden>+ New job</button>
+    </div>
+    <p class="muted small" id="jobsNote"></p>
+    <ul id="jobList" class="job-list"></ul>
+  </div>
+</section>
+
+<!-- ================= LAB / FIELD CHOICE ================= -->
+<section id="typePick" class="screen page" hidden>
+  <header class="page-head">
+    <button class="icon-btn" id="typeBack" aria-label="Back to jobs">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <div class="grow">
+      <h1 id="tpJobNo"></h1>
+      <p class="muted" id="tpSite"></p>
+    </div>
+  </header>
+  <div class="page-body">
+    <p class="question">What are you photographing?</p>
+    <div class="type-cards">
+      <button class="type-card" data-type="Laboratory">
+        <svg viewBox="0 0 48 48"><path d="M18 6h12M20 6v12L9 38a3 3 0 002.7 4h24.6a3 3 0 002.7-4L28 18V6M14 30h20"/></svg>
+        <b>Laboratory</b>
+        <span>Job no., site, test name, date &amp; time</span>
+      </button>
+      <button class="type-card" data-type="Field">
+        <svg viewBox="0 0 48 48"><path d="M24 43s14-12.4 14-24a14 14 0 00-28 0c0 11.6 14 24 14 24z"/><circle cx="24" cy="19" r="5"/></svg>
+        <b>Field</b>
+        <span>Logo, date &amp; time, coordinates, location, site, your text</span>
+      </button>
+    </div>
+    <div class="submit-box" id="submitBox" hidden>
+      <p class="muted small">All tests for this job finished?</p>
+      <button class="btn wide submit-btn" id="submitJobBtn" type="button">✓ Submit job — all tests done</button>
+    </div>
+  </div>
+</section>
+
+<!-- confirmation dialog (submit job) -->
+<div id="confirmDlg" class="dialog-wrap" hidden>
+  <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <h2 id="confirmTitle"></h2>
+    <div id="confirmBody"></div>
+    <div class="dialog-actions">
+      <button class="btn" id="confirmNo" type="button">Cancel</button>
+      <button class="btn primary" id="confirmYes" type="button"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ================= CAMERA ================= -->
+<section id="cam" class="screen" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <canvas id="preview"></canvas>
+  <div id="flash"></div>
+
+  <div id="camError" class="cam-error" hidden>
+    <p id="camErrorMsg">Camera not available.</p>
+    <button class="btn primary" id="retryCam">Try again</button>
+    <button class="btn" id="camErrBack">Back</button>
+  </div>
+
+  <header class="topbar">
+    <button class="round sm" id="camBack" aria-label="Back">
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <button class="chip ctx" id="ctxBtn" aria-label="Edit details">
+      <span class="ctx-loc" id="ctxType">Field</span>
+      <span class="ctx-main" id="ctxJob"></span>
+      <span class="ctx-sub" id="ctxSub"></span>
+    </button>
+    <div class="status">
+      <span class="pill" id="gpsPill">GPS …</span>
+      <span class="pill" id="netPill">Online</span>
+    </div>
+  </header>
+
+  <div class="rotate-hint" id="rotateHint" hidden>
+    <svg viewBox="0 0 64 64" class="rot-phone"><rect x="20" y="6" width="24" height="44" rx="4"/><path d="M29 44h6"/></svg>
+    <b>Turn your phone sideways</b>
+    <span id="rotateMsg">Field photos can only be taken in landscape.</span>
+  </div>
+
+  <div class="rec-timer" id="recTimer" hidden><i></i><span>00:00</span></div>
+
+  <footer class="bottombar">
+    <div class="mode-switch" role="tablist">
+      <button role="tab" data-mode="photo" aria-selected="true">PHOTO</button>
+      <button role="tab" data-mode="video" aria-selected="false">VIDEO</button>
+    </div>
+    <div class="controls">
+      <button class="round" id="queueBtn" aria-label="Upload queue">
+        <svg viewBox="0 0 24 24"><path d="M12 15V4M7 9l5-5 5 5M4 15v4a1 1 0 001 1h14a1 1 0 001-1v-4"/></svg>
+        <span class="badge" data-queue-badge hidden>0</span>
+      </button>
+      <button class="shutter" id="shutter" aria-label="Take photo"><span></span></button>
+      <div class="side-col">
+        <button class="round" id="switchBtn" aria-label="Switch camera">
+          <svg viewBox="0 0 24 24"><path d="M20 11A8 8 0 006.3 6.3L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0013.7 4.7L20 15.5M20 20v-4.5h-4.5"/></svg>
+        </button>
+        <button class="round" id="torchBtn" aria-label="Torch" hidden>
+          <svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
+        </button>
+        <button class="round" id="stampBtn" aria-label="Admin settings" hidden>
+          <svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+        </button>
+      </div>
+    </div>
+  </footer>
+</section>
+
+<!-- ================= REVIEW ================= -->
+<div id="review" class="overlay" hidden>
+  <img id="reviewImg" alt="Captured photo">
+  <div class="review-bar">
+    <button class="btn" id="retakeBtn">Retake</button>
+    <button class="btn primary" id="keepBtn">Save &amp; upload</button>
+  </div>
+</div>
+
+<!-- ================= SHEETS ================= -->
+<div id="scrim" hidden></div>
+
+<!-- details for the current photo type -->
+<section id="detailsSheet" class="sheet" hidden>
+  <div class="sheet-head"><h2 id="detailsTitle">Details</h2><button class="x" data-close>✕</button></div>
+  <form id="detailsForm" class="sheet-body">
+    <label><span id="testLabel">Test name</span> <b class="req" id="testReq">*</b>
+      <select id="fTestSel"></select>
+    </label>
+    <label id="fTestOtherRow" hidden>Type the test name
+      <input id="fTest" autocomplete="off" placeholder="Test not in the list">
+    </label>
+    <div data-for="Field">
+      <label>Your text on the photo
+        <textarea id="fText" rows="2" placeholder="e.g. Pier P4 – concrete pouring"></textarea>
+      </label>
+    </div>
+    <p id="detailsErr" class="err" role="alert"></p>
+    <button type="submit" class="btn primary wide">Done</button>
+  </form>
+</section>
+
+
+<section id="queueSheet" class="sheet" hidden>
+  <div class="sheet-head"><h2>Upload queue</h2><button class="x" data-close>✕</button></div>
+  <div class="sheet-body">
+    <p id="queueSummary" class="muted"></p>
+    <button class="btn primary wide" id="syncNow">Upload now</button>
+    <ul id="queueList" class="qlist"></ul>
+    <p class="muted small">Waiting photos and videos are kept encrypted inside this app only (not in your gallery) and are deleted the moment <span data-store="the">the NAS</span> confirms they are saved. Keep the app open for uploads to run.</p>
+  </div>
+</section>
+
+<section id="settingsSheet" class="sheet" hidden>
+  <div class="sheet-head"><h2>Settings</h2><button class="x" data-close>✕</button></div>
+  <div class="sheet-body">
+    <p>Logged in as <b id="whoami"></b></p>
+    <p id="photogRow" hidden>Photographer on this phone: <b id="photogName"></b> <button class="linkbtn" id="changeName" type="button">Change</button></p>
+    <div class="server-box" id="serverBox">Checking…</div>
+    <button class="btn wide" id="changeNasBtn" type="button" hidden>Change app address</button>
+    <p class="set-label">Theme</p>
+    <div class="seg" id="themeSeg" role="radiogroup" aria-label="Theme">
+      <button type="button" role="radio" data-theme="system">System default</button>
+      <button type="button" role="radio" data-theme="dark">Dark</button>
+      <button type="button" role="radio" data-theme="light">Light</button>
+    </div>
+    <button class="btn wide" id="adminBtn" hidden>Admin Settings</button>
+    <p class="muted small" id="staffNote">Photo and stamp settings are managed by your admin.</p>
+    <button class="btn wide" id="logoutBtn">Log out</button>
+    <p class="muted small" id="appVer"></p>
+  </div>
+</section>
+
+<!-- admin: create / edit job -->
+<section id="jobSheet" class="sheet" hidden>
+  <div class="sheet-head"><h2 id="jobSheetTitle">New job</h2><button class="x" data-close>✕</button></div>
+  <form id="jobForm" class="sheet-body">
+    <label>Job number <b class="req">*</b><input id="jNo" required autocomplete="off" autocapitalize="characters"></label>
+    <label>Site name <b class="req">*</b><input id="jSite" required autocomplete="off"></label>
+    <label>Location name <b class="req">*</b><input id="jLoc" required autocomplete="off" placeholder="e.g. Madhapar, Rajkot, Gujarat"></label>
+    <p class="muted small" id="jFolder"></p>
+    <label class="check" id="jActiveRow"><input type="checkbox" id="jActive"> Show this job to staff</label>
+    <p id="jobErr" class="err" role="alert"></p>
+    <button type="submit" class="btn primary wide" id="jobSave">Create job</button>
+  </form>
+</section>
+
+<!-- admin: company settings -->
+<section id="adminSheet" class="sheet tall" hidden>
+  <div class="sheet-head"><h2>Admin Settings</h2><button class="x" data-close>✕</button></div>
+  <div class="sheet-body">
+    <h3>Company logo <span class="muted small">(field photos only)</span></h3>
+    <div class="logo-row">
+      <div class="logo-box" id="logoBox">No logo</div>
+      <div class="logo-actions">
+        <button class="btn" id="logoPick">Upload logo</button>
+        <button class="btn" id="logoRemove">Remove</button>
+        <input type="file" id="logoInput" accept="image/png,image/jpeg,image/webp" hidden>
+      </div>
+    </div>
+
+    <h3>Photos</h3>
+    <label class="toggle-row">Photo size
+      <select id="aMax">
+        <option value="0">Device best (full resolution)</option>
+        <option value="4000">Large 4000 px</option>
+        <option value="3000">Medium 3000 px</option>
+        <option value="2000">Small 2000 px</option>
+      </select>
+    </label>
+    <label class="toggle-row">JPEG quality
+      <select id="aQuality"><option value="0.92">High</option><option value="0.85">Normal</option><option value="0.75">Low</option></select>
+    </label>
+    <label class="toggle-row">Review each photo before saving<input type="checkbox" id="aReview"></label>
+    <p class="muted small">Field photos are always landscape. Laboratory photos and all videos can be portrait or landscape.</p>
+
+    <h3>Laboratory stamp</h3>
+    <div id="aLab"></div>
+
+    <h3>Field stamp</h3>
+    <div id="aField"></div>
+
+    <h3>Laboratory test names <span class="muted small">(one per line)</span></h3>
+    <label><textarea id="aTests" rows="6"></textarea></label>
+
+    <h3>Field test names <span class="muted small">(one per line)</span></h3>
+    <label><textarea id="aFieldTests" rows="6"></textarea></label>
+
+    <h3>Other</h3>
+    <label>Video quality
+      <select id="aVideoRes"><option value="0">Device best (highest)</option><option value="1920">Full HD 1080p</option><option value="1280">HD 720p</option><option value="720">Small 480p</option></select>
+    </label>
+    <label class="check"><input type="checkbox" id="aAudio"> Record sound with videos</label>
+    <p id="adminErr" class="err" role="alert"></p>
+    <button class="btn primary wide" id="adminSave">Save for everyone</button>
+  </div>
+</section>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
