@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.0.1';
+const APP_VERSION = '4.1.0';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -242,7 +242,8 @@ function fmtCoords(lat, lon, fmt) {
     case 'utm': {
       if (lat < -80 || lat > 84) return fmtCoords(lat, lon, 'decimal');
       const u = toUTM(lat, lon);
-      return `UTM ${u.zone}${u.band} ${Math.round(u.E)} E ${Math.round(u.N)} N`;
+      // e.g. "42 Q 759213.00 m E 2360761.00 m N" (no "UTM" label on the photo)
+      return `${u.zone} ${u.band} ${u.E.toFixed(2)} m E ${u.N.toFixed(2)} m N`;
     }
     default: return `${la.toFixed(6)}° ${ns}, ${lo.toFixed(6)}° ${ew}`;
   }
@@ -271,7 +272,7 @@ function locationName() {
 function buildStamp(type, when, gps) {
   const c = stampConf(type), job = state.job, d = currentDetails(), lines = [];
   let coordText = '';
-  if (gps) coordText = fmtCoords(gps.lat, gps.lon, c.coord_format || 'decimal');
+  if (gps) coordText = fmtCoords(gps.lat, gps.lon, c.coord_format || 'utm');
   if (type === 'Laboratory') {
     if (c.job_number) lines.push(`Job No: ${job.job_number}`);
     if (c.site_name) lines.push(`Site: ${job.site_name}`);
@@ -285,7 +286,7 @@ function buildStamp(type, when, gps) {
   if (c.site_name) lines.push(`Site: ${job.site_name}`);
   if (c.test_name && d.field_test) lines.push(`Test: ${d.field_test}`);
   if (c.custom_text && d.custom_text) lines.push(d.custom_text);
-  return { lines, logo: !!(c.logo && state.logo), corner: c.logo_corner || 'top-left', logoSize: c.logo_size, coordText, style: stampStyle(c) };
+  return { lines, logo: !!(c.logo && state.logo), corner: c.logo_corner || 'top-left', logoSize: c.logo_size, logoOpacity: c.logo_opacity, coordText, style: stampStyle(c) };
 }
 /* ---------- stamp style ---------- */
 const SIZE_FACTOR = { small: 0.026, large: 0.036, xlarge: 0.048 };
@@ -422,7 +423,9 @@ function renderStamp(ctx, w, h, stamp, logoImg, font) {
     const lw = logoImg.width * sc, lh = logoImg.height * sc;
     const x = stamp.corner.endsWith('right') ? w - lw - pad : pad;
     const y = stamp.corner.startsWith('bottom') ? blockTop - lh - pad : pad;
+    ctx.globalAlpha = Math.max(10, Math.min(100, Number(stamp.logoOpacity ?? 100))) / 100;   // logo opacity (admin setting)
     ctx.drawImage(logoImg, x, y, lw, lh);
+    ctx.globalAlpha = 1;
   }
   ctx.restore();
   return out;
@@ -434,6 +437,8 @@ const SCREENS = ['login', 'jobs', 'typePick', 'cam'];
 function show(screen) {
   for (const id of SCREENS) $(id).hidden = id !== screen;
   state.screen = screen;
+  // Android app: on the camera screen follow the phone's position even when auto-rotate is off
+  try { ANDROID_APP?.setCameraMode?.(screen === 'cam'); } catch {}
 }
 function pushNav() { history.pushState({ fc: Date.now() }, ''); }
 function goBack() { history.back(); }
@@ -634,7 +639,8 @@ function closeDropdown() {
   document.removeEventListener('scroll', ddScroll, true);
 }
 function ddOutside(e) { if (ddOpen && !ddOpen.list.contains(e.target) && !ddOpen.btn.contains(e.target)) closeDropdown(); }
-function ddScroll(e) { if (ddOpen && !ddOpen.list.contains(e.target)) closeDropdown(); }
+// Close on page scroll — but not for a scroll that was still settling when the list opened
+function ddScroll(e) { if (ddOpen && !ddOpen.list.contains(e.target) && Date.now() - ddOpen.at > 250) closeDropdown(); }
 function ddKey(e) {
   if (!ddOpen) return;
   const items = [...ddOpen.list.querySelectorAll('li:not(.off)')];
@@ -686,7 +692,7 @@ function openDropdown(sel, btn) {
   list.style.top = (down ? r.bottom + 2 : r.top - 2 - h) + 'px';
   list.querySelector('li.on')?.scrollIntoView({ block: 'nearest' });
   btn.setAttribute('aria-expanded', 'true');
-  ddOpen = { sel, btn, list };
+  ddOpen = { sel, btn, list, at: Date.now() };
   document.addEventListener('pointerdown', ddOutside, true);
   document.addEventListener('keydown', ddKey, true);
   window.addEventListener('resize', closeDropdown);
@@ -767,6 +773,7 @@ async function onJobListClick(e) {
   $('tpJobNo').textContent = job.job_number;
   $('tpSite').textContent = job.site_name;
   $('submitBox').hidden = !GAS_URL;
+  $('saveLocal').checked = !!currentDetails().save_local;   // per job, remembered on this phone; off by default
   pushNav(); show('typePick');
 }
 async function submitJob() {
@@ -863,11 +870,14 @@ function updateCtx() {
   if (!state.job) return;
   $('ctxType').textContent = state.type === 'Laboratory' ? 'Laboratory' : 'Field';
   $('ctxJob').textContent = `${state.job.job_number} · ${state.job.site_name}`;
-  const d = currentDetails();
-  $('ctxSub').textContent = state.type === 'Laboratory'
-    ? (d.test_name ? 'Test: ' + d.test_name : 'Tap to choose test name')
-    : (d.field_test ? 'Test: ' + d.field_test + ' · ' : 'Tap to choose field test · ') + ([locationName(), d.custom_text].filter(Boolean).join(' · '));
-  $('ctxBtn').classList.toggle('missing', !!detailsMissing());
+  const d = currentDetails(), lab = state.type === 'Laboratory';
+  $('ctxSub').textContent = lab ? '' : locationName();
+  // The clearly visible "✎ … Change" button under the top bar shows the test (and field text)
+  const test = lab ? d.test_name : d.field_test;
+  $('editTest').textContent = test ? 'Test: ' + test : (lab ? 'Choose the test' : 'Choose the field test');
+  $('editText').hidden = lab;
+  $('editText').textContent = d.custom_text ? 'Text: ' + d.custom_text : 'Add your text on the photo';
+  $('editBtn').classList.toggle('missing', !!detailsMissing());
   $('stampBtn').hidden = state.auth?.role !== 'admin';
 }
 function renderDetails() {
@@ -949,7 +959,8 @@ function updateOrientation() {
   $('shutter').classList.toggle('blocked', blocked);
   $('shutter').setAttribute('aria-disabled', blocked);
   if (blocked) {
-    $('rotateMsg').textContent = heldSideways
+    const appRotates = typeof ANDROID_APP?.setCameraMode === 'function';   // Android app turns the screen itself
+    $('rotateMsg').textContent = heldSideways && !appRotates
       ? 'Your phone is sideways but the screen did not turn. Switch on Auto-rotate (swipe down from the top of the screen), then try again.'
       : 'Field photos can only be taken in landscape. Videos can be taken either way.';
   }
@@ -1141,7 +1152,34 @@ function endReview() {
   state.pending = null;
   $('review').hidden = true;
 }
+/* ---------- optional copy of Field photos on this phone (per-job switch) ---------- */
+function localName(meta) {
+  const d = new Date(meta.captured_at), safe = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
+  const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  return `${safe(meta.job_number)}-${safe(meta.test_name) || 'Field'}-${stamp}.jpg`;
+}
+async function saveToPhone(blob, name) {
+  // Android app: straight into the gallery (Pictures/FieldCam), sent in pieces
+  if (ANDROID_APP) {
+    if (typeof ANDROID_APP.saveBegin !== 'function') { toast('Update the FieldCam Android app to save photos on the phone', true, 4000); return false; }
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    const id = ANDROID_APP.saveBegin(name);
+    if (!id) { toast('Allow “Photos/Storage” for FieldCam to save on the phone', true, 4000); return false; }
+    for (let i = 0; i < buf.length; i += 768 * 1024) ANDROID_APP.saveAppend(id, toB64(buf.subarray(i, i + 768 * 1024)));
+    const res = ANDROID_APP.saveFinish(id);
+    if (res !== 'ok') { toast('Could not save on the phone: ' + res, true, 4000); return false; }
+    return true;
+  }
+  // Browser: download a copy (Android Chrome: Downloads; iPhone: offers to save)
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return true;
+}
 async function savePhoto(blob, meta) {
+  if (meta.type === 'Field' && currentDetails().save_local) {
+    try { await saveToPhone(blob, localName(meta)); } catch (e) { toast('Could not save on the phone', true); }
+  }
   const buf = await blob.arrayBuffer();
   const total = Math.max(1, Math.ceil(buf.byteLength / CHUNK));
   for (let i = 0; i < total; i++) await chunkPut(meta.uid, i, await seal(buf.slice(i * CHUNK, (i + 1) * CHUNK)));
@@ -1433,9 +1471,9 @@ function drawSamples() {
     ctx.fillStyle = grd; ctx.fillRect(0, 0, cv.width, cv.height);
     const lines = g === 'lab'
       ? ['Job No: JN-2026/045', 'Site: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', '27 September, 2026 | 02:30 PM']
-      : ['27 September, 2026 | 02:30 PM', '22.303900° N, 70.802200° E', 'Madhapar, Rajkot, Gujarat', 'Site: Rajkot Ring Road Bridge', 'Test: Plate Load Test'];
+      : ['27 September, 2026 | 02:30 PM', fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Site: Rajkot Ring Road Bridge', 'Test: Plate Load Test'];
     const logoOn = g === 'field' && conf.logo !== false && !!state.logo;
-    drawStamp(ctx, cv.width, cv.height, { lines, style: stampStyle(conf), logo: logoOn, corner: conf.logo_corner || 'top-left', logoSize: conf.logo_size });
+    drawStamp(ctx, cv.width, cv.height, { lines, style: stampStyle(conf), logo: logoOn, corner: conf.logo_corner || 'top-left', logoSize: conf.logo_size, logoOpacity: conf.logo_opacity });
   });
 }
 function renderAdmin() {
@@ -1446,20 +1484,59 @@ function renderAdmin() {
     + selectRow('Coordinate format', 'field.coord_format', COORD_FORMATS, s.field.coord_format)
     + selectRow('Logo corner', 'field.logo_corner', CORNERS, s.field.logo_corner)
     + `<label class="toggle-row">Logo size<span class="range"><input type="range" min="10" max="60" step="2" data-k="field.logo_size" value="${s.field.logo_size || 26}"><output>${s.field.logo_size || 26}%</output></span></label>`
+    + `<label class="toggle-row">Logo opacity<span class="range"><input type="range" min="10" max="100" step="5" data-k="field.logo_opacity" value="${s.field.logo_opacity ?? 100}"><output>${s.field.logo_opacity ?? 100}%</output></span></label>`
     + styleRows('field', s.field);
-  $('aTests').value = (s.test_names || []).join('\n');
-  $('aFieldTests').value = (s.field_test_names || []).join('\n');
+  // Test lists: a drop-down per list, "+" to add a test, bin to remove the selected one
+  adminLists = { test_names: [...(s.test_names || [])], field_test_names: [...(s.field_test_names || [])] };
+  renderTestList('test_names'); renderTestList('field_test_names');
   const pc = photoConf();
-  $('aMax').value = String(pc.max_dim);
+  // Older settings used 4000 / 3000 / 2000 px — show the nearest of today's sizes
+  const oldPhoto = { 4000: 3840, 3000: 2560, 2000: 1920 };
+  $('aMax').value = String(oldPhoto[pc.max_dim] ?? pc.max_dim);
   $('aQuality').value = String(pc.quality);
   if (!$('aQuality').value) $('aQuality').value = '0.85';
   $('aReview').checked = !!pc.review;
-  $('aVideoRes').value = String(s.video?.max_res ?? 0);
+  const vr = s.video?.max_res ?? 0;
+  $('aVideoRes').value = String(vr === 720 ? 854 : vr);
   $('aAudio').checked = s.video?.audio !== false;
   $('adminErr').textContent = '';
   renderLogoBox();
   requestAnimationFrame(drawSamples);
 }
+/* ---------- admin: test name lists (drop-down + "+" to add, bin to remove) ---------- */
+let adminLists = { test_names: [], field_test_names: [] };
+function renderTestList(key, select) {
+  const box = document.querySelector(`#adminSheet .test-edit[data-list="${key}"]`); if (!box) return;
+  const list = adminLists[key];
+  const sel = box.querySelector('.test-sel');
+  const keep = select ?? sel.value;
+  sel.innerHTML = list.length ? list.map((t) => `<option value="${esc(t)}">${esc(t)}</option>`).join('') : '<option value="">(no tests yet — tap +)</option>';
+  sel.value = list.includes(keep) ? keep : (list[0] || '');
+  box.querySelector('.del').disabled = !list.length;
+  box.querySelector('.count').textContent = `${list.length} test${list.length === 1 ? '' : 's'} in this list`;
+}
+function onTestListClick(e) {
+  const box = e.target.closest('.test-edit'); if (!box) return;
+  const key = box.dataset.list, addRow = box.querySelector('.test-add'), input = addRow.querySelector('input');
+  if (e.target.closest('.add')) {
+    addRow.hidden = !addRow.hidden;
+    if (!addRow.hidden) { input.value = ''; input.focus(); }
+  } else if (e.target.closest('.add-ok')) {
+    const name = input.value.trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (!name) { input.focus(); return; }
+    const list = adminLists[key];
+    if (list.some((t) => t.toLowerCase() === name.toLowerCase())) { toast('That test is already in the list', true); return; }
+    list.push(name);
+    addRow.hidden = true;
+    renderTestList(key, name);
+    toast(`Added “${name}” — tap Save for everyone`);
+  } else if (e.target.closest('.del')) {
+    const sel = box.querySelector('.test-sel'), name = sel.value; if (!name) return;
+    askConfirm({ title: 'Remove this test?', html: `<p>“${esc(name)}” will no longer be in the drop-down for staff. Photos already taken are not changed.</p>`, yes: 'Remove' })
+      .then((ok) => { if (!ok) return; adminLists[key] = adminLists[key].filter((t) => t !== name); renderTestList(key); });
+  }
+}
+
 let logoUrl;
 function renderLogoBox() {
   if (logoUrl) URL.revokeObjectURL(logoUrl), logoUrl = null;
@@ -1477,8 +1554,8 @@ async function saveAdmin() {
     const [grp, k] = el.dataset.k.split('.');
     s[grp][k] = el.type === 'checkbox' ? el.checked : el.type === 'range' ? +el.value : el.value;
   });
-  s.test_names = $('aTests').value.split('\n').map((t) => t.trim()).filter(Boolean);
-  s.field_test_names = $('aFieldTests').value.split('\n').map((t) => t.trim()).filter(Boolean);
+  s.test_names = adminLists.test_names;
+  s.field_test_names = adminLists.field_test_names;
   s.photo = { max_dim: +$('aMax').value, quality: +$('aQuality').value, review: $('aReview').checked };
   s.video = { max_res: +$('aVideoRes').value, audio: $('aAudio').checked };
   $('adminSave').disabled = true;
@@ -1544,6 +1621,7 @@ function wire() {
   $('camErrBack').addEventListener('click', goBack);
   $('shutter').addEventListener('click', onShutter);
   $('ctxBtn').addEventListener('click', () => { if (!state.rec) openSheet('detailsSheet'); });
+  $('editBtn').addEventListener('click', () => { if (state.rec) { toast('Stop the recording first'); return; } openSheet('detailsSheet'); });
   $('queueBtn').addEventListener('click', () => { if (!state.rec) openSheet('queueSheet'); });
   $('stampBtn').addEventListener('click', () => { if (!state.rec) openSheet('adminSheet'); });
   document.querySelectorAll('.mode-switch button').forEach((b) => b.addEventListener('click', () => setMode(b.dataset.mode)));
@@ -1564,6 +1642,13 @@ function wire() {
   $('changeNasBtn').addEventListener('click', () => ANDROID_APP?.changeServer());
   $('themeSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-theme]'); if (b) applyTheme(b.dataset.theme); });
   $('submitJobBtn').addEventListener('click', submitJob);
+  $('saveLocal').addEventListener('change', () => {
+    const d = currentDetails(); d.save_local = $('saveLocal').checked; kvSet('jobDetails', state.jobDetails);
+    if (d.save_local) {
+      try { ANDROID_APP?.askStoragePermission?.(); } catch {}                 // older Android versions need it
+      toast('Field photos of this job will also be saved on this phone');
+    }
+  });
   $('jobTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]'); if (!b) return;
     state.jobTab = b.dataset.tab; renderJobs();
@@ -1584,6 +1669,10 @@ function wire() {
     drawSamples();
   });
   $('adminSheet').addEventListener('change', drawSamples);
+  $('adminSheet').addEventListener('click', onTestListClick);
+  $('adminSheet').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.target.closest('.test-add input')) { e.preventDefault(); e.target.closest('.test-add').querySelector('.add-ok').click(); }
+  });
   $('logoPick').addEventListener('click', () => $('logoInput').click());
   $('logoInput').addEventListener('change', onLogoFile);
   $('logoRemove').addEventListener('click', removeLogo);

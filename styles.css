@@ -334,3 +334,59 @@ label.check input { width: 22px; height: 22px; margin: 0; accent-color: var(--ac
 .job.done .job-no { color: var(--ok); }
 .job.done .job-open { cursor: default; }
 .job-tag.done { background: transparent; border: 1px solid var(--ok); color: var(--ok); }
+
+/* ---------- camera (4.1): two-row top bar, shutter centred ---------- */
+.topbar { flex-direction: column; align-items: stretch; gap: 8px; }
+.top-main { display: flex; gap: 8px; align-items: center; }
+.top-main .chip { flex: 1; min-width: 0; max-width: none; }
+.toolrow { display: grid; grid-template-columns: 42px minmax(0, 1fr) 42px; gap: 8px; align-items: center; }
+#stampBtn { grid-column: 1; } .edit-pill { grid-column: 2; } #torchBtn { grid-column: 3; }
+.toolrow > * { grid-row: 1; order: 0 !important; }   /* one row in portrait and landscape */
+/* the test & text, clearly tappable ("Change") */
+.edit-pill { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; justify-self: center;
+  padding: 6px 6px 6px 12px; border-radius: 999px; border: 1.5px solid var(--accent); background: #000b; color: #fff;
+  text-align: left; backdrop-filter: blur(6px); }
+.edit-pill > svg { flex: none; width: 18px; height: 18px; fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.ep-lines { display: flex; flex-direction: column; min-width: 0; }
+.ep-lines b, .ep-lines span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ep-lines b { font-size: 14px; }
+.ep-lines span { font-size: 12px; color: #d0d0d0; }
+.ep-go { flex: none; font-size: 12px; font-weight: 800; padding: 5px 10px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); }
+.edit-pill.missing { background: var(--accent); color: var(--accent-ink); animation: pulse .9s infinite alternate; }
+.edit-pill.missing > svg { stroke: var(--accent-ink); }
+.edit-pill.missing .ep-lines span { color: var(--accent-ink); }
+.edit-pill.missing .ep-go { background: #000; color: var(--accent); }
+.controls > #switchBtn { justify-self: end; }
+.rec-timer { top: calc(118px + var(--safe-t)); }
+@media (orientation: landscape) and (max-height: 620px) {
+  .topbar { gap: 6px; }
+  .controls { display: flex; flex-direction: column; gap: 14px; align-items: center; }
+  #queueBtn { order: 1; } .shutter { order: 2; } #switchBtn { order: 3; }
+  .rec-timer { top: calc(100px + var(--safe-t)); }
+}
+
+/* ---------- admin: test lists (drop-down + add / remove) ---------- */
+.test-row { display: flex; gap: 8px; align-items: stretch; }
+.test-row .dd-btn { flex: 1; min-width: 0; margin-top: 0; }
+.test-row .dd-btn span, .test-row .dd-btn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sq-btn { flex: none; width: 48px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+  font-size: 26px; font-weight: 600; display: grid; place-items: center; }
+.sq-btn.add { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.sq-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.sq-btn:disabled { opacity: .4; }
+.test-add { display: flex; gap: 8px; margin-top: 8px; }
+.test-add input { flex: 1; min-width: 0; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font-size: 16px; }
+.test-edit .count { margin: 6px 0 4px; }
+
+/* ---------- job page: save field photos on this phone (per job) ---------- */
+.switch-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 18px; padding: 14px 16px;
+  border: 1px solid var(--line); border-radius: 14px; background: var(--panel); cursor: pointer; }
+.switch-row b { display: block; font-size: 16px; }
+.switch-row small { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.switch { position: relative; flex: none; width: 52px; height: 30px; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.switch i { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background .15s; pointer-events: none; }
+.switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 3px #0005; }
+.switch input:checked + i { background: var(--ok); }
+.switch input:checked + i::after { transform: translateX(22px); }
+.switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }

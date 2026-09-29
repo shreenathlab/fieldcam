@@ -103,6 +103,11 @@
         <span>Logo, date &amp; time, coordinates, location, site, your text</span>
       </button>
     </div>
+    <!-- per job, per phone; off by default -->
+    <label class="switch-row" id="saveLocalRow">
+      <span><b>Also save Field photos on this phone</b><small>For this job only. They still upload to <span data-store="the">Google Drive</span> as usual.</small></span>
+      <span class="switch"><input type="checkbox" id="saveLocal" aria-label="Also save Field photos on this phone"><i></i></span>
+    </label>
     <div class="submit-box" id="submitBox" hidden>
       <p class="muted small">All tests for this job finished?</p>
       <button class="btn wide submit-btn" id="submitJobBtn" type="button">✓ Submit job — all tests done</button>
@@ -135,17 +140,33 @@
   </div>
 
   <header class="topbar">
-    <button class="round sm" id="camBack" aria-label="Back">
-      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
-    </button>
-    <button class="chip ctx" id="ctxBtn" aria-label="Edit details">
-      <span class="ctx-loc" id="ctxType">Field</span>
-      <span class="ctx-main" id="ctxJob"></span>
-      <span class="ctx-sub" id="ctxSub"></span>
-    </button>
-    <div class="status">
-      <span class="pill" id="gpsPill">GPS …</span>
-      <span class="pill" id="netPill">Online</span>
+    <div class="top-main">
+      <button class="round sm" id="camBack" aria-label="Back">
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="chip ctx" id="ctxBtn">
+        <span class="ctx-loc" id="ctxType">Field</span>
+        <span class="ctx-main" id="ctxJob"></span>
+        <span class="ctx-sub" id="ctxSub"></span>
+      </div>
+      <div class="status">
+        <span class="pill" id="gpsPill">GPS …</span>
+        <span class="pill" id="netPill">Online</span>
+      </div>
+    </div>
+    <!-- second row: Settings (admins) top-left · test & text (tap to change) · Flash top-right -->
+    <div class="toolrow">
+      <button class="round sm" id="stampBtn" aria-label="Admin settings" hidden>
+        <svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
+      </button>
+      <button class="edit-pill" id="editBtn" type="button" aria-label="Change test and text">
+        <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4"/></svg>
+        <span class="ep-lines"><b id="editTest">Choose the test</b><span id="editText" hidden></span></span>
+        <span class="ep-go">Change</span>
+      </button>
+      <button class="round sm" id="torchBtn" aria-label="Flash light" hidden>
+        <svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
+      </button>
     </div>
   </header>
 
@@ -168,17 +189,9 @@
         <span class="badge" data-queue-badge hidden>0</span>
       </button>
       <button class="shutter" id="shutter" aria-label="Take photo"><span></span></button>
-      <div class="side-col">
-        <button class="round" id="switchBtn" aria-label="Switch camera">
-          <svg viewBox="0 0 24 24"><path d="M20 11A8 8 0 006.3 6.3L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0013.7 4.7L20 15.5M20 20v-4.5h-4.5"/></svg>
-        </button>
-        <button class="round" id="torchBtn" aria-label="Torch" hidden>
-          <svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
-        </button>
-        <button class="round" id="stampBtn" aria-label="Admin settings" hidden>
-          <svg viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></svg>
-        </button>
-      </div>
+      <button class="round" id="switchBtn" aria-label="Switch camera">
+        <svg viewBox="0 0 24 24"><path d="M20 11A8 8 0 006.3 6.3L4 8.5M4 4v4.5h4.5M4 13a8 8 0 0013.7 4.7L20 15.5M20 20v-4.5h-4.5"/></svg>
+      </button>
     </div>
   </footer>
 </section>
@@ -278,11 +291,13 @@
     <label class="toggle-row">Photo size
       <select id="aMax">
         <option value="0">Device best (full resolution)</option>
-        <option value="4000">Large 4000 px</option>
-        <option value="3000">Medium 3000 px</option>
-        <option value="2000">Small 2000 px</option>
+        <option value="3840">3840 × 2160 (4K)</option>
+        <option value="2560">2560 × 1440 (2K)</option>
+        <option value="1920">1920 × 1080 (Full HD)</option>
+        <option value="1280">1280 × 720 (HD)</option>
       </select>
     </label>
+    <p class="muted small">Photos keep the camera's shape — the size sets the longer side (a 4:3 camera at 1920 × 1080 gives 1920 × 1440).</p>
     <label class="toggle-row">JPEG quality
       <select id="aQuality"><option value="0.92">High</option><option value="0.85">Normal</option><option value="0.75">Low</option></select>
     </label>
@@ -295,15 +310,31 @@
     <h3>Field stamp</h3>
     <div id="aField"></div>
 
-    <h3>Laboratory test names <span class="muted small">(one per line)</span></h3>
-    <label><textarea id="aTests" rows="6"></textarea></label>
+    <h3>Laboratory test names</h3>
+    <div class="test-edit" data-list="test_names">
+      <div class="test-row">
+        <select class="test-sel" aria-label="Laboratory tests"></select>
+        <button type="button" class="sq-btn add" aria-label="Add a laboratory test">+</button>
+        <button type="button" class="sq-btn del" aria-label="Remove the selected test"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
+      </div>
+      <div class="test-add" hidden><input placeholder="New laboratory test name" maxlength="80" autocomplete="off"><button type="button" class="btn primary add-ok">Add</button></div>
+      <p class="muted small count"></p>
+    </div>
 
-    <h3>Field test names <span class="muted small">(one per line)</span></h3>
-    <label><textarea id="aFieldTests" rows="6"></textarea></label>
+    <h3>Field test names</h3>
+    <div class="test-edit" data-list="field_test_names">
+      <div class="test-row">
+        <select class="test-sel" aria-label="Field tests"></select>
+        <button type="button" class="sq-btn add" aria-label="Add a field test">+</button>
+        <button type="button" class="sq-btn del" aria-label="Remove the selected test"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg></button>
+      </div>
+      <div class="test-add" hidden><input placeholder="New field test name" maxlength="80" autocomplete="off"><button type="button" class="btn primary add-ok">Add</button></div>
+      <p class="muted small count"></p>
+    </div>
 
     <h3>Other</h3>
     <label>Video quality
-      <select id="aVideoRes"><option value="0">Device best (highest)</option><option value="1920">Full HD 1080p</option><option value="1280">HD 720p</option><option value="720">Small 480p</option></select>
+      <select id="aVideoRes"><option value="0">Device best (up to 3840 × 2160)</option><option value="1920">1920 × 1080 (Full HD)</option><option value="1280">1280 × 720 (HD)</option><option value="854">854 × 480 (SD)</option></select>
     </label>
     <label class="check"><input type="checkbox" id="aAudio"> Record sound with videos</label>
     <p id="adminErr" class="err" role="alert"></p>
