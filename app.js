@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.1.2';
+const APP_VERSION = '4.1.3';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -1015,10 +1015,10 @@ async function startCamera() {
     : { facingMode: { ideal: state.facing }, width: { ideal: 8192 }, height: { ideal: 6144 } };   // highest the camera allows
   const wantAudio = state.mode === 'video' && state.settings?.video?.audio !== false;
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({ video, audio: wantAudio });
+    state.stream = await openCamera(video, wantAudio);
   } catch (e) {
     if (wantAudio && e.name === 'NotAllowedError') {
-      try { state.stream = await navigator.mediaDevices.getUserMedia({ video, audio: false }); toast('Microphone not allowed — videos will be silent'); }
+      try { state.stream = await openCamera(video, false); toast('Microphone not allowed — videos will be silent'); }
       catch (e2) { return camFail(camMsg(e2)); }
     } else return camFail(camMsg(e));
   }
@@ -1030,6 +1030,9 @@ async function startCamera() {
   state.imageCapture = null;
   if (state.mode === 'photo' && 'ImageCapture' in window) { try { state.imageCapture = new ImageCapture(state.track); } catch {} }
   const caps = state.track.getCapabilities?.() || {};
+  // Pinch-to-zoom: the camera's own zoom when the phone offers it, otherwise digital zoom
+  state.zoomHw = caps.zoom && caps.zoom.max > caps.zoom.min ? caps.zoom : null;
+  state.zoom = 1; applyZoom(1, true);
   $('torchBtn').hidden = !caps.torch;
   state.torch = false; $('torchBtn').classList.remove('on');
   layoutPreview();
@@ -1043,6 +1046,88 @@ function stopCamera() {
   state.stream?.getTracks().forEach((t) => t.stop());
   state.stream = state.track = state.imageCapture = null;
 }
+/** Opens the camera, asking for its zoom control too (Chrome); falls back when that isn't supported. */
+async function openCamera(video, audio) {
+  try { return await navigator.mediaDevices.getUserMedia({ video: { ...video, zoom: true }, audio }); }
+  catch (e) {
+    if (e.name === 'NotAllowedError') throw e;
+    return navigator.mediaDevices.getUserMedia({ video, audio });
+  }
+}
+
+/* ======================= pinch to zoom the camera (not the screen) ======================= */
+const MAX_DIGITAL_ZOOM = 5;
+function maxZoom() { return state.zoomHw ? Math.min(state.zoomHw.max, 10) : MAX_DIGITAL_ZOOM; }
+/** Digital zoom factor (1 when the camera zooms itself). */
+function digitalZoom() { return state.zoomHw ? 1 : Math.max(1, state.zoom || 1); }
+let zoomPillT, zoomApplyT;
+function applyZoom(z, silent) {
+  const minZ = state.zoomHw ? Math.max(1, state.zoomHw.min) : 1;
+  z = Math.max(minZ, Math.min(maxZoom(), Math.round(z * 10) / 10));
+  state.zoom = z;
+  if (state.zoomHw) {
+    $('video').style.transform = '';
+    clearTimeout(zoomApplyT);                            // camera zoom: at most ~20 changes a second
+    zoomApplyT = setTimeout(() => state.track?.applyConstraints({ advanced: [{ zoom: z }] })?.catch(() => {}), 50);
+  } else {
+    $('video').style.transform = z > 1 ? `scale(${z})` : '';
+  }
+  clipZoomedVideo();
+  const pill = $('zoomPill');
+  pill.textContent = z.toFixed(1) + '×';
+  clearTimeout(zoomPillT);
+  if (silent) { pill.hidden = z <= 1; return; }
+  pill.hidden = false;
+  if (z <= 1) zoomPillT = setTimeout(() => { pill.hidden = true; }, 1200);
+}
+/** Digital zoom: keep the enlarged picture inside the photo area (it must not spill into the black bars). */
+function clipZoomedVideo() {
+  const v = $('video'), z = digitalZoom();
+  if (z <= 1 || !previewRect.w) { v.style.clipPath = ''; return; }
+  const W = window.innerWidth, H = window.innerHeight;
+  const hw = previewRect.w / 2 / z, hh = previewRect.h / 2 / z;
+  v.style.clipPath = `inset(${Math.max(0, H / 2 - hh)}px ${Math.max(0, W / 2 - hw)}px ${Math.max(0, H / 2 - hh)}px ${Math.max(0, W / 2 - hw)}px)`;
+}
+/** The saved photo matches the zoomed view: keep the middle 1/zoom of the picture, at full size. */
+function digitalCrop(img) {
+  const z = digitalZoom();
+  if (z <= 1) return img;
+  const w = img.width, h = img.height, cw = w / z, ch = h / z;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, (w - cw) / 2, (h - ch) / 2, cw, ch, 0, 0, w, h);
+  img.close?.();
+  return c;
+}
+/* Two fingers on the camera screen = zoom the camera */
+const pinch = { pts: new Map(), startDist: 0, startZoom: 1 };
+function pinchDist() { const [a, b] = [...pinch.pts.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; }
+function wirePinchZoom() {
+  const cam = $('cam');
+  cam.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.pts.size === 2) { pinch.startDist = pinchDist(); pinch.startZoom = state.zoom || 1; }
+  });
+  cam.addEventListener('pointermove', (e) => {
+    if (!pinch.pts.has(e.pointerId)) return;
+    pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pinch.pts.size === 2 && state.stream) applyZoom(pinch.startZoom * (pinchDist() / pinch.startDist));
+  });
+  const end = (e) => { pinch.pts.delete(e.pointerId); if (pinch.pts.size < 2) pinch.startDist = 0; };
+  cam.addEventListener('pointerup', end); cam.addEventListener('pointercancel', end); cam.addEventListener('pointerleave', end);
+  // Computer: Ctrl + mouse wheel zooms the camera
+  cam.addEventListener('wheel', (e) => { if (!e.ctrlKey || !state.stream) return; e.preventDefault(); applyZoom((state.zoom || 1) * (e.deltaY < 0 ? 1.1 : 0.9)); }, { passive: false });
+  $('zoomPill').addEventListener('click', () => applyZoom(1));
+}
+/* The app screen itself never zooms (iPhone ignores the page setting, so stop its zoom gestures too) */
+function blockPageZoom() {
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => document.addEventListener(t, (e) => e.preventDefault(), { passive: false }));
+  document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
+  // (double-tap zoom is switched off by the page style "touch-action: manipulation", so quick taps on the shutter still work)
+  document.addEventListener('wheel', (e) => { if (e.ctrlKey && !e.target.closest('#cam')) e.preventDefault(); }, { passive: false });
+}
+
 function camFail(msg) { $('camErrorMsg').textContent = msg; $('camError').hidden = false; $('rotateHint').hidden = true; }
 
 function setMode(mode, silent) {
@@ -1064,6 +1149,7 @@ function layoutPreview() {
   if (!vw || !vh) return;
   const s = Math.min(W / vw, H / vh);                  // object-fit: contain
   previewRect = { w: vw * s, h: vh * s, x: (W - vw * s) / 2, y: (H - vh * s) / 2 };
+  clipZoomedVideo();
   const dpr = window.devicePixelRatio || 1;
   Object.assign(c.style, { left: previewRect.x + 'px', top: previewRect.y + 'px', width: previewRect.w + 'px', height: previewRect.h + 'px' });
   c.width = Math.round(previewRect.w * dpr); c.height = Math.round(previewRect.h * dpr);
@@ -1146,12 +1232,12 @@ async function onShutter() {
     const when = new Date(), gps = freshGps();
     const turn = sideCapture() ? sideDir : 0;                 // phone held sideways, screen upright
     const raw = await grabFrame();
-    let bmp = await toBitmap(raw);
+    let bmp = digitalCrop(await toBitmap(raw));          // pinch zoom (digital): keep the zoomed middle part
     if (turn && bmp.height > bmp.width) {
       // Camera-app style: turn the upright picture into the landscape photo the user is holding
       const rotated = rotateSideways(bmp, turn); bmp.close?.(); bmp = rotated;
     } else if (state.type === 'Field' && bmp.height > bmp.width) {   // camera returned an upright still — use the (landscape) live frame
-      bmp.close?.(); bmp = await toBitmap(await videoFrame());
+      bmp.close?.(); bmp = digitalCrop(await toBitmap(await videoFrame()));
       if (bmp.height > bmp.width) { bmp.close?.(); throw new Error('Turn your phone sideways — field photos are landscape only'); }
     }
     const stamp = buildStamp(state.type, when, gps);
@@ -1324,7 +1410,8 @@ async function startRecording() {
   const draw = () => {
     if (!alive) return;
     const vw = v.videoWidth, vh = v.videoHeight;
-    if (Math.abs(vw / vh - W / H) < 0.02) ctx.drawImage(v, 0, 0, W, H);
+    const dz = digitalZoom();                            // pinch zoom (digital) also applies to videos
+    if (Math.abs(vw / vh - W / H) < 0.02) ctx.drawImage(v, (vw - vw / dz) / 2, (vh - vh / dz) / 2, vw / dz, vh / dz, 0, 0, W, H);
     else {                                          // phone turned while recording: fit without stretching
       const k = Math.min(W / vw, H / vh);
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
@@ -1745,6 +1832,8 @@ function wire() {
 
 (async function boot() {
   wire();
+  wirePinchZoom();
+  blockPageZoom();
   applyTheme(currentTheme());
   enhanceAllSelects();
   // Sheets (admin settings, details) are re-drawn often: give new <select>s the custom drop-down too

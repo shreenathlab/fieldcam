@@ -399,3 +399,20 @@ label.check input { width: 22px; height: 22px; margin: 0; accent-color: var(--ac
 #cam .round svg, #cam .round .badge { transition: transform .25s; }
 #cam.side-left .round svg { transform: rotate(90deg); }
 #cam.side-right .round svg { transform: rotate(-90deg); }
+
+/* ---------- behave like an app, not a web page ---------- */
+html, body { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+input, textarea, [contenteditable] { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+button, a, label, .job, .type-card, .dd-btn, .dd-list li { touch-action: manipulation; }
+img { -webkit-user-drag: none; }
+
+/* ---------- camera: pinch to zoom ---------- */
+#cam { touch-action: none; }                       /* two-finger pinch is handled by the app (camera zoom) */
+#video { transform-origin: 50% 50%; will-change: transform; }
+.zoom-pill { position: absolute; left: 50%; bottom: calc(190px + var(--safe-b)); transform: translateX(-50%); z-index: 6;
+  border: 0; border-radius: 999px; padding: 6px 14px; font-weight: 800; font-size: 15px; background: #000b; color: var(--accent);
+  backdrop-filter: blur(6px); font-variant-numeric: tabular-nums; }
+@media (orientation: landscape) and (max-height: 620px) {
+  .zoom-pill { bottom: auto; top: calc(62px + var(--safe-t)); left: auto; right: calc(64px + env(safe-area-inset-right, 0px)); transform: translateX(50%); }
+}

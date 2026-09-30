@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- behave like an app: no page zoom (pinch on the camera zooms the camera instead) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <title>FieldCam</title>
   <meta name="theme-color" content="#0e1113">
   <meta name="color-scheme" content="dark light">
@@ -172,6 +173,8 @@
   </div>
 
   <div class="rec-timer" id="recTimer" hidden><i></i><span>00:00</span></div>
+  <!-- camera zoom level (pinch to zoom); tap to go back to 1× -->
+  <button class="zoom-pill" id="zoomPill" type="button" hidden>1.0×</button>
   <!-- phone held sideways while the screen stays upright: the photo is saved as landscape -->
   <div class="side-badge" id="sideBadge" hidden>✓ Landscape photo</div>
 
