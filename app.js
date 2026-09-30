@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.1.3';
+const APP_VERSION = '4.2.0';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -252,7 +252,7 @@ function fmtCoords(lat, lon, fmt) {
 /* ======================= stamps ======================= */
 /** Company photo settings (set by admins only). */
 function photoConf() {
-  return { max_dim: 0, quality: 0.92, review: true, ...(state.settings?.photo || {}) };
+  return { max_dim: 0, quality: 0.92, review: true, aspect: '', ...(state.settings?.photo || {}) };
 }
 function stampConf(type) {
   const s = state.settings || {};
@@ -1055,30 +1055,82 @@ async function openCamera(video, audio) {
   }
 }
 
+/* ======================= aspect ratio (admin setting for photos and for videos) ======================= */
+const ASPECTS = { '4:3': 4 / 3, '3:2': 3 / 2, '16:9': 16 / 9 };
+/** Long side ÷ short side chosen by the admin, or 0 = keep the camera's own shape. */
+function aspectValue(mode) { return ASPECTS[state.settings?.[mode === 'video' ? 'video' : 'photo']?.aspect] || 0; }
+/** Largest centred area of w×h with that shape (keeps portrait/landscape as it is). */
+function aspectRect(w, h, r) {
+  if (!r) return { x: 0, y: 0, w, h };
+  const land = w >= h;
+  let L = land ? w : h, S = land ? h : w;
+  if (L / S > r) L = S * r; else S = L / r;
+  const cw = land ? L : S, ch = land ? S : L;
+  return { x: (w - cw) / 2, y: (h - ch) / 2, w: cw, h: ch };
+}
+/** Photo: cut the centre to the chosen shape. */
+function aspectCrop(img, r) {
+  if (!r) return img;
+  const a = aspectRect(img.width, img.height, r);
+  const cw = Math.round(a.w), ch = Math.round(a.h);
+  if (cw >= img.width && ch >= img.height) return img;
+  const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+  c.getContext('2d').drawImage(img, a.x, a.y, a.w, a.h, 0, 0, cw, ch);
+  img.close?.();
+  return c;
+}
+
 /* ======================= pinch to zoom the camera (not the screen) ======================= */
 const MAX_DIGITAL_ZOOM = 5;
 function maxZoom() { return state.zoomHw ? Math.min(state.zoomHw.max, 10) : MAX_DIGITAL_ZOOM; }
 /** Digital zoom factor (1 when the camera zooms itself). */
 function digitalZoom() { return state.zoomHw ? 1 : Math.max(1, state.zoom || 1); }
-let zoomPillT, zoomApplyT;
-function applyZoom(z, silent) {
+/* Smooth zoom, like a camera app: the pinch sets a target and the zoom glides towards it on every
+   screen frame (eases in and out). The camera's own zoom gets the newest value as soon as it has
+   finished applying the previous one, so it never lags behind or piles up. */
+const zoomAnim = { target: 1, raf: 0, hwBusy: false, hwNext: null };
+let zoomPillT;
+function clampZoom(z) {
   const minZ = state.zoomHw ? Math.max(1, state.zoomHw.min) : 1;
-  z = Math.max(minZ, Math.min(maxZoom(), Math.round(z * 10) / 10));
-  state.zoom = z;
-  if (state.zoomHw) {
-    $('video').style.transform = '';
-    clearTimeout(zoomApplyT);                            // camera zoom: at most ~20 changes a second
-    zoomApplyT = setTimeout(() => state.track?.applyConstraints({ advanced: [{ zoom: z }] })?.catch(() => {}), 50);
-  } else {
-    $('video').style.transform = z > 1 ? `scale(${z})` : '';
-  }
-  clipZoomedVideo();
+  return Math.max(minZ, Math.min(maxZoom(), z));
+}
+function applyZoom(z, instant) {
+  zoomAnim.target = clampZoom(z);
   const pill = $('zoomPill');
-  pill.textContent = z.toFixed(1) + '×';
+  pill.textContent = zoomAnim.target.toFixed(1) + '×';
   clearTimeout(zoomPillT);
-  if (silent) { pill.hidden = z <= 1; return; }
+  if (instant) {                                         // new camera: jump straight there
+    cancelAnimationFrame(zoomAnim.raf); zoomAnim.raf = 0;
+    renderZoom(zoomAnim.target);
+    pill.hidden = zoomAnim.target <= 1;
+    return;
+  }
   pill.hidden = false;
-  if (z <= 1) zoomPillT = setTimeout(() => { pill.hidden = true; }, 1200);
+  if (zoomAnim.target <= 1) zoomPillT = setTimeout(() => { pill.hidden = true; }, 1200);
+  if (!zoomAnim.raf) zoomAnim.raf = requestAnimationFrame(zoomStep);
+}
+function zoomStep() {
+  zoomAnim.raf = 0;
+  const cur = state.zoom || 1, d = zoomAnim.target - cur;
+  // move 30 % of the remaining distance each frame (~60 per second) → quick but smooth
+  const next = Math.abs(d) < 0.004 ? zoomAnim.target : cur + d * 0.3;
+  renderZoom(next);
+  if (next !== zoomAnim.target) zoomAnim.raf = requestAnimationFrame(zoomStep);
+}
+function renderZoom(z) {
+  state.zoom = z;
+  if (state.zoomHw) { $('video').style.transform = ''; sendHwZoom(z); }
+  else $('video').style.transform = z > 1 ? `scale(${z})` : '';
+  clipZoomedVideo();
+}
+function sendHwZoom(z) {
+  if (zoomAnim.hwBusy) { zoomAnim.hwNext = z; return; }  // camera still busy: remember only the newest value
+  const t = state.track; if (!t?.applyConstraints) return;
+  zoomAnim.hwBusy = true;
+  t.applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {}).finally(() => {
+    zoomAnim.hwBusy = false;
+    if (zoomAnim.hwNext !== null) { const n = zoomAnim.hwNext; zoomAnim.hwNext = null; sendHwZoom(n); }
+  });
 }
 /** Digital zoom: keep the enlarged picture inside the photo area (it must not spill into the black bars). */
 function clipZoomedVideo() {
@@ -1107,7 +1159,7 @@ function wirePinchZoom() {
   cam.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse') return;
     pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pinch.pts.size === 2) { pinch.startDist = pinchDist(); pinch.startZoom = state.zoom || 1; }
+    if (pinch.pts.size === 2) { pinch.startDist = pinchDist(); pinch.startZoom = zoomAnim.target || 1; }
   });
   cam.addEventListener('pointermove', (e) => {
     if (!pinch.pts.has(e.pointerId)) return;
@@ -1117,7 +1169,7 @@ function wirePinchZoom() {
   const end = (e) => { pinch.pts.delete(e.pointerId); if (pinch.pts.size < 2) pinch.startDist = 0; };
   cam.addEventListener('pointerup', end); cam.addEventListener('pointercancel', end); cam.addEventListener('pointerleave', end);
   // Computer: Ctrl + mouse wheel zooms the camera
-  cam.addEventListener('wheel', (e) => { if (!e.ctrlKey || !state.stream) return; e.preventDefault(); applyZoom((state.zoom || 1) * (e.deltaY < 0 ? 1.1 : 0.9)); }, { passive: false });
+  cam.addEventListener('wheel', (e) => { if (!e.ctrlKey || !state.stream) return; e.preventDefault(); applyZoom((zoomAnim.target || 1) * (e.deltaY < 0 ? 1.1 : 0.9)); }, { passive: false });
   $('zoomPill').addEventListener('click', () => applyZoom(1));
 }
 /* The app screen itself never zooms (iPhone ignores the page setting, so stop its zoom gestures too) */
@@ -1161,13 +1213,24 @@ function drawPreview() {
   const c = $('preview'), ctx = c.getContext('2d');
   ctx.clearRect(0, 0, c.width, c.height);
   const stamp = buildStamp(state.type, new Date(), freshGps());
-  if (!sideCapture()) { drawStamp(ctx, c.width, c.height, stamp); return; }
-  // Phone held sideways on an upright screen: draw the stamp as it will sit on the landscape photo, turned to match
-  const off = document.createElement('canvas'); off.width = c.height; off.height = c.width;
-  drawStamp(off.getContext('2d'), off.width, off.height, stamp);
-  ctx.save();
-  if (sideDir > 0) { ctx.translate(c.width, 0); ctx.rotate(Math.PI / 2); } else { ctx.translate(0, c.height); ctx.rotate(-Math.PI / 2); }
-  ctx.drawImage(off, 0, 0);
+  // Admin's aspect ratio: darken what will be cut off, and put the stamp inside the part that is kept
+  const a = aspectRect(c.width, c.height, aspectValue(state.mode));
+  if (a.w < c.width - 1 || a.h < c.height - 1) {
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(0, 0, c.width, a.y); ctx.fillRect(0, a.y + a.h, c.width, c.height - a.y - a.h);
+    ctx.fillRect(0, a.y, a.x, a.h); ctx.fillRect(a.x + a.w, a.y, c.width - a.x - a.w, a.h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)'; ctx.lineWidth = Math.max(1, c.width / 400);
+    ctx.strokeRect(a.x, a.y, a.w, a.h);
+  }
+  ctx.save(); ctx.translate(a.x, a.y);
+  if (!sideCapture()) drawStamp(ctx, a.w, a.h, stamp);
+  else {
+    // Phone held sideways on an upright screen: draw the stamp as it will sit on the landscape photo, turned to match
+    const off = document.createElement('canvas'); off.width = a.h; off.height = a.w;
+    drawStamp(off.getContext('2d'), off.width, off.height, stamp);
+    if (sideDir > 0) { ctx.translate(a.w, 0); ctx.rotate(Math.PI / 2); } else { ctx.translate(0, a.h); ctx.rotate(-Math.PI / 2); }
+    ctx.drawImage(off, 0, 0);
+  }
   ctx.restore();
 }
 
@@ -1240,6 +1303,7 @@ async function onShutter() {
       bmp.close?.(); bmp = digitalCrop(await toBitmap(await videoFrame()));
       if (bmp.height > bmp.width) { bmp.close?.(); throw new Error('Turn your phone sideways — field photos are landscape only'); }
     }
+    bmp = aspectCrop(bmp, aspectValue('photo'));          // admin's aspect ratio (4:3, 3:2, 16:9)
     const stamp = buildStamp(state.type, when, gps);
     const meta = baseMeta('photo', when, gps, stamp);
     const sw = bmp.width, sh = bmp.height;
@@ -1341,8 +1405,10 @@ async function startRecording() {
   } catch {}
 
   const maxRes = state.settings?.video?.max_res || Infinity;   // 0 = device best (no limit)
-  const sc = Math.min(1, maxRes / Math.max(v.videoWidth, v.videoHeight));
-  const W = Math.round(v.videoWidth * sc / 2) * 2, H = Math.round(v.videoHeight * sc / 2) * 2;
+  const r0 = v.videoWidth / v.videoHeight, vAspect = aspectValue('video');   // admin's aspect ratio for videos
+  const crop0 = aspectRect(v.videoWidth, v.videoHeight, vAspect);
+  const sc = Math.min(1, maxRes / Math.max(crop0.w, crop0.h));
+  const W = Math.round(crop0.w * sc / 2) * 2, H = Math.round(crop0.h * sc / 2) * 2;
   const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
   const layer = document.createElement('canvas'); layer.width = W; layer.height = H;
@@ -1411,7 +1477,10 @@ async function startRecording() {
     if (!alive) return;
     const vw = v.videoWidth, vh = v.videoHeight;
     const dz = digitalZoom();                            // pinch zoom (digital) also applies to videos
-    if (Math.abs(vw / vh - W / H) < 0.02) ctx.drawImage(v, (vw - vw / dz) / 2, (vh - vh / dz) / 2, vw / dz, vh / dz, 0, 0, W, H);
+    if (Math.abs(vw / vh - r0) < 0.02) {                // same way up as when recording started: keep the chosen shape (+ zoom)
+      const a = aspectRect(vw, vh, vAspect);
+      ctx.drawImage(v, a.x + (a.w - a.w / dz) / 2, a.y + (a.h - a.h / dz) / 2, a.w / dz, a.h / dz, 0, 0, W, H);
+    }
     else {                                          // phone turned while recording: fit without stretching
       const k = Math.min(W / vw, H / vh);
       ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
@@ -1625,6 +1694,8 @@ function renderAdmin() {
   $('aQuality').value = String(pc.quality);
   if (!$('aQuality').value) $('aQuality').value = '0.85';
   $('aReview').checked = !!pc.review;
+  $('aPhotoAspect').value = pc.aspect || '';
+  $('aVideoAspect').value = s.video?.aspect || '';
   const vr = s.video?.max_res ?? 0;
   $('aVideoRes').value = String(vr === 720 ? 854 : vr);
   $('aAudio').checked = s.video?.audio !== false;
@@ -1685,8 +1756,8 @@ async function saveAdmin() {
   });
   s.test_names = adminLists.test_names;
   s.field_test_names = adminLists.field_test_names;
-  s.photo = { max_dim: +$('aMax').value, quality: +$('aQuality').value, review: $('aReview').checked };
-  s.video = { max_res: +$('aVideoRes').value, audio: $('aAudio').checked };
+  s.photo = { max_dim: +$('aMax').value, quality: +$('aQuality').value, review: $('aReview').checked, aspect: $('aPhotoAspect').value };
+  s.video = { max_res: +$('aVideoRes').value, audio: $('aAudio').checked, aspect: $('aVideoAspect').value };
   $('adminSave').disabled = true;
   const r = await api('admin.php', { json: { action: 'settings_save', settings: s } });
   $('adminSave').disabled = false;

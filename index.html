@@ -302,7 +302,10 @@
         <option value="1280">1280 × 720 (HD)</option>
       </select>
     </label>
-    <p class="muted small">Photos keep the camera's shape — the size sets the longer side (a 4:3 camera at 1920 × 1080 gives 1920 × 1440).</p>
+    <label class="toggle-row">Photo shape (aspect ratio)
+      <select id="aPhotoAspect"><option value="">Camera default</option><option value="4:3">4:3</option><option value="3:2">3:2</option><option value="16:9">16:9 (widescreen)</option></select>
+    </label>
+    <p class="muted small">The size sets the longer side; the shape cuts the middle of the picture to 4:3, 3:2 or 16:9 (e.g. 1920 × 1080 at 16:9). Camera default keeps the camera's own shape.</p>
     <label class="toggle-row">JPEG quality
       <select id="aQuality"><option value="0.92">High</option><option value="0.85">Normal</option><option value="0.75">Low</option></select>
     </label>
@@ -340,6 +343,9 @@
     <h3>Other</h3>
     <label>Video quality
       <select id="aVideoRes"><option value="0">Device best (up to 3840 × 2160)</option><option value="1920">1920 × 1080 (Full HD)</option><option value="1280">1280 × 720 (HD)</option><option value="854">854 × 480 (SD)</option></select>
+    </label>
+    <label>Video shape (aspect ratio)
+      <select id="aVideoAspect"><option value="">Camera default</option><option value="16:9">16:9 (widescreen)</option><option value="4:3">4:3</option></select>
     </label>
     <label class="check"><input type="checkbox" id="aAudio"> Record sound with videos</label>
     <p id="adminErr" class="err" role="alert"></p>
