@@ -148,7 +148,7 @@
         <span class="ctx-sub" id="ctxSub"></span>
       </div>
       <div class="status">
-        <span class="pill" id="gpsPill">GPS …</span>
+        <span class="pill" id="gpsPill" role="button" tabindex="0" title="GPS accuracy — tap for coordinates">GPS …</span>
         <span class="pill" id="netPill">Online</span>
       </div>
     </div>
@@ -260,8 +260,8 @@
         <div class="two-col" id="upUtm" hidden>
           <label>Zone<input id="upZone" inputmode="numeric" autocomplete="off" placeholder="42"></label>
           <label>Band<input id="upBand" maxlength="1" autocomplete="off" autocapitalize="characters" placeholder="Q"></label>
-          <label>Easting (m E)<input id="upE" inputmode="decimal" autocomplete="off" placeholder="759213.00"></label>
-          <label>Northing (m N)<input id="upN" inputmode="decimal" autocomplete="off" placeholder="2360761.00"></label>
+          <label>Easting (m E)<input id="upE" inputmode="decimal" autocomplete="off" placeholder="759213"></label>
+          <label>Northing (m N)<input id="upN" inputmode="decimal" autocomplete="off" placeholder="2360761"></label>
         </div>
         <p class="muted small" id="upCoordPreview"></p>
       </div>
@@ -305,7 +305,7 @@
 <section id="jobSheet" class="sheet" hidden>
   <div class="sheet-head"><h2 id="jobSheetTitle">New job</h2><button class="x" data-close>✕</button></div>
   <form id="jobForm" class="sheet-body">
-    <label>Job number <b class="req">*</b><input id="jNo" required autocomplete="off" autocapitalize="characters"></label>
+    <label>Sub-Job No. <b class="req">*</b><input id="jNo" required autocomplete="off" autocapitalize="characters"></label>
     <label>Project name <b class="req">*</b><input id="jSite" required autocomplete="off" placeholder="e.g. Rajkot Ring Road Bridge"></label>
     <label>Site location <b class="req">*</b><input id="jLoc" required autocomplete="off" placeholder="e.g. Madhapar, Rajkot, Gujarat"></label>
     <p class="muted small" id="jFolder"></p>

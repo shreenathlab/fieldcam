@@ -2,7 +2,7 @@
    The app opens instantly from that copy (no waiting for the network), and the newest version is
    fetched in the background — it is used the next time FieldCam is opened.
    Photos and uploads never pass through this cache; the Android APK is always fetched fresh. */
-const CACHE = 'fieldcam-v4.3.0';
+const CACHE = 'fieldcam-v4.3.1';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'app.js', 'manifest.webmanifest',
   'fonts/RobotoCondensed.ttf', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 

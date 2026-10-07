@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.3.0';
+const APP_VERSION = '4.3.1';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -26,7 +26,7 @@ const CHUNK = (GAS_URL ? 5 : 1.5) * 1024 * 1024;   // bigger pieces = fewer roun
 const MAX_VIDEO_SEC = 30 * 60;
 const $ = (id) => document.getElementById(id);
 
-const LAB_ITEMS = [['job_number', 'Job number'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['datetime', 'Date & time']];
+const LAB_ITEMS = [['job_number', 'Sub-Job No.'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['datetime', 'Date & time']];
 const FIELD_ITEMS = [['logo', 'Company logo'], ['datetime', 'Date & time'], ['coords', 'Coordinates'], ['location_name', 'Site location'], ['site_name', 'Project name'], ['test_name', 'Field test name'], ['custom_text', 'Your text']];
 const COORD_FORMATS = [['decimal', 'Decimal degrees'], ['dms', 'Deg° Min′ Sec″'], ['ddm', 'Deg° Decimal-min′'], ['utm', 'UTM']];
 const TEXT_SIZES = [['small', 'Small'], ['large', 'Large'], ['xlarge', 'Extra large']];
@@ -259,8 +259,8 @@ function fmtCoords(lat, lon, fmt) {
     case 'utm': {
       if (lat < -80 || lat > 84) return fmtCoords(lat, lon, 'decimal');
       const u = toUTM(lat, lon);
-      // e.g. "42 Q 759213.00 m E 2360761.00 m N" (no "UTM" label on the photo)
-      return `${u.zone} ${u.band} ${u.E.toFixed(2)} m E ${u.N.toFixed(2)} m N`;
+      // whole metres, e.g. "42 Q 759213 m E 2360761 m N" (no "UTM" label on the photo)
+      return `${u.zone} ${u.band} ${Math.round(u.E)} m E ${Math.round(u.N)} m N`;
     }
     default: return `${la.toFixed(6)}° ${ns}, ${lo.toFixed(6)}° ${ew}`;
   }
@@ -293,7 +293,7 @@ function buildStamp(type, when, gps, ov) {
   if (ov && ov.coordText !== undefined) coordText = ov.coordText;
   else if (gps) coordText = fmtCoords(gps.lat, gps.lon, c.coord_format || 'utm');
   if (type === 'Laboratory') {
-    if (c.job_number) lines.push(`Job No: ${job.job_number}`);
+    if (c.job_number) lines.push(`Sub-Job No: ${job.job_number}`);
     if (c.site_name) lines.push(`Project: ${job.site_name}`);
     if (c.test_name && d.test_name) lines.push(`Test: ${d.test_name}`);
     if (c.datetime) lines.push(fmtDate(when));
@@ -740,7 +740,7 @@ function askConfirm({ title, html, yes }) {
 
 /* ======================= jobs ======================= */
 const isSubmitted = (j) => j.status === 'submitted';
-const KEEP_DAYS = () => state.server?.submitted_keep_days || 60;
+const KEEP_DAYS = () => state.server?.submitted_keep_days || 30;
 function fmtDay(iso) { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
 function renderJobs() {
   const admin = state.auth?.role === 'admin';
@@ -983,8 +983,17 @@ function freshGps() { return state.gps && Date.now() - state.gps.at < 120000 ? s
 function renderGps(msg) {
   const p = $('gpsPill'), g = freshGps();
   if (!g) { p.textContent = msg || 'No GPS'; p.className = 'pill bad'; return; }
-  p.textContent = `GPS ±${Math.round(g.accuracy)} m`;
-  p.className = 'pill ' + (g.accuracy <= 25 ? 'ok' : 'warn');
+  // Accuracy is shown here only — never stamped on the photo (it is kept in the CSV log)
+  const acc = Math.round(g.accuracy);
+  p.textContent = `±${acc} m · ${acc <= 10 ? 'Good' : acc <= 25 ? 'Fair' : 'Weak'}`;
+  p.className = 'pill gps ' + (acc <= 10 ? 'ok' : acc <= 25 ? 'warn' : 'bad');
+}
+/** Tap the GPS pill: the current coordinates with their accuracy (for information only). */
+function showGpsInfo() {
+  const g = freshGps();
+  if (!g) { toast('No GPS position yet — go outside / wait a moment', true); return; }
+  const fmt = stampConf('Field').coord_format || 'utm';
+  toast(`${fmtCoords(g.lat, g.lon, fmt)}  ·  accuracy ±${Math.round(g.accuracy)} m (not printed on the photo)`, false, 5000);
 }
 /* ======================= orientation (photos landscape only) ======================= */
 let heldSideways = null;          // from the motion sensor; null = unknown
@@ -1487,7 +1496,7 @@ function readUploadCoords() {
     return { error: 'UTM: zone 1–60, band letter (e.g. Q), easting 100000–900000 m, northing 0–10000000 m.' };
   }
   const ll = fromUTM(zone, band, E, N);
-  const text = fmt === 'utm' ? `${zone} ${band} ${E.toFixed(2)} m E ${N.toFixed(2)} m N` : fmtCoords(ll.lat, ll.lon, fmt);
+  const text = fmt === 'utm' ? `${zone} ${band} ${Math.round(E)} m E ${Math.round(N)} m N` : fmtCoords(ll.lat, ll.lon, fmt);
   return { gps: { lat: ll.lat, lon: ll.lon, accuracy: null, altitude: null }, text };
 }
 async function submitUpload(e) {
@@ -1871,7 +1880,7 @@ function drawSamples() {
     grd.addColorStop(0, '#6b8f5a'); grd.addColorStop(1, '#b8a47a');
     ctx.fillStyle = grd; ctx.fillRect(0, 0, cv.width, cv.height);
     const lines = g === 'lab'
-      ? ['Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', '27 September, 2026 | 02:30 PM']
+      ? ['Sub-Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', '27 September, 2026 | 02:30 PM']
       : ['27 September, 2026 | 02:30 PM', fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Project: Rajkot Ring Road Bridge', 'Test: Plate Load Test'];
     const logoOn = g === 'field' && conf.logo !== false && !!state.logo;
     drawStamp(ctx, cv.width, cv.height, { lines, style: stampStyle(conf), logo: logoOn, corner: conf.logo_corner || 'top-left', logoSize: conf.logo_size, logoOpacity: conf.logo_opacity });
@@ -2026,6 +2035,7 @@ function wire() {
   $('camErrBack').addEventListener('click', goBack);
   $('shutter').addEventListener('click', onShutter);
   $('ctxBtn').addEventListener('click', () => { if (!state.rec) openSheet('detailsSheet'); });
+  $('gpsPill').addEventListener('click', showGpsInfo);
   $('editBtn').addEventListener('click', () => { if (state.rec) { toast('Stop the recording first'); return; } openSheet('detailsSheet'); });
   $('queueBtn').addEventListener('click', () => { if (!state.rec) openSheet('queueSheet'); });
   $('stampBtn').addEventListener('click', () => { if (!state.rec) openSheet('adminSheet'); });

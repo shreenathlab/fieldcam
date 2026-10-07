@@ -429,3 +429,6 @@ img { -webkit-user-drag: none; }
 .up-thumbs { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 10px; }
 .up-thumbs img { flex: none; width: 76px; height: 76px; object-fit: cover; border-radius: 8px; background: var(--panel-2); }
 .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+
+#gpsPill { cursor: pointer; }
+#gpsPill.gps::before { content: '📍 '; }
