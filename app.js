@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.3.3';
+const APP_VERSION = '4.3.4';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -1833,7 +1833,7 @@ function renderSettings() {
   $('adminBtn').hidden = !admin;
   $('staffNote').hidden = admin;
   $('changeNasBtn').hidden = !ANDROID_APP;
-  $('appVer').textContent = 'FieldCam ' + APP_VERSION + (ANDROID_APP ? ' · Android app ' + ANDROID_APP.version() : '');
+  $('appVer').textContent = 'FieldCam ' + APP_VERSION + (ANDROID_APP ? ' · Android app ' + ANDROID_APP.version() : ' · browser') + '\n' + screenInfo();
   checkServer();
 }
 async function checkServer() {
@@ -1847,6 +1847,19 @@ async function checkServer() {
     row(r.storage_writable, r.storage_exists ? (r.storage_writable ? 'Testing Photographs folder is writable' : 'Folder exists but is NOT writable') : `Testing Photographs folder not found in ${STORE}`),
     r.role === 'admin' ? row(!r.secret_is_default, r.secret_is_default ? 'Change the secret in api/config.php' : 'Security key set') : '',
   ].join('');
+}
+
+/** Settings diagnostic: what this phone reports (screen width, layout width, scaling, text enlargement). */
+function screenInfo() {
+  let text = '?';
+  try {
+    const s = document.createElement('span');
+    s.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;font:16px "Roboto Condensed";letter-spacing:0';
+    s.textContent = 'FieldCam text check 0123456789';
+    document.body.appendChild(s); text = Math.round(s.getBoundingClientRect().width / 210.47 * 100); s.remove();
+  } catch {}
+  const sw = Math.min(screen.width, screen.height);
+  return `screen ${sw} · layout ${window.innerWidth} · ×${(window.visualViewport?.scale || 1).toFixed(2)} · text ${text}%`;
 }
 
 /* ======================= admin: company settings ======================= */

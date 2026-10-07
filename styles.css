@@ -432,3 +432,5 @@ img { -webkit-user-drag: none; }
 
 #gpsPill { cursor: pointer; }
 #gpsPill.gps::before { content: '📍 '; }
+
+#appVer { white-space: pre-line; }
