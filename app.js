@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.3.1';
+const APP_VERSION = '4.3.2';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -1329,7 +1329,7 @@ async function grabFrame() {
       try {
         const pc = await state.imageCapture.getPhotoCapabilities();
         if (pc?.imageWidth?.max) {
-          const want = photoConf().max_dim || 4096;           // "Device best" is limited to ~16.5 MP anyway
+          const want = photoConf().max_dim || 4680;           // "Device best": the most the app can process (~16.4 MP)
           const r = pc.imageWidth.max / pc.imageHeight.max;
           const w = Math.min(pc.imageWidth.max, Math.max(pc.imageWidth.min || 0, r >= 1 ? want : Math.round(want * r)));
           opts = { imageWidth: w, imageHeight: Math.round(w / r) };
