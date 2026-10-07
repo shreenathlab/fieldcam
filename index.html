@@ -3,7 +3,26 @@
 <head>
   <meta charset="utf-8">
   <!-- behave like an app: no page zoom (pinch on the camera zooms the camera instead) -->
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" id="vp" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <script>
+    /* Same look on every phone: lay the app out as on a standard 412-wide phone and let the phone scale it to
+       its screen. Phones with a "narrow" screen setting (e.g. Samsung, ~384 wide) otherwise show everything bigger. */
+    (function () {
+      var BASE = 412, vp = document.getElementById('vp');
+      function fit() {
+        var s = Math.min(screen.width, screen.height), l = Math.max(screen.width, screen.height);
+        if (!s || !vp) return;
+        var k = Math.min(1, Math.max(0.8, s / BASE));          // only shrink narrow screens; wider phones/tablets keep their own look
+        var land = window.matchMedia ? matchMedia('(orientation: landscape)').matches : false;
+        var w = Math.round((land ? l : s) / k), z = k.toFixed(4);
+        var c = 'width=' + w + ', initial-scale=' + z + ', minimum-scale=' + z + ', maximum-scale=' + z + ', user-scalable=no, viewport-fit=cover';
+        if (vp.getAttribute('content') !== c) vp.setAttribute('content', c);
+      }
+      fit();
+      window.addEventListener('orientationchange', function () { setTimeout(fit, 60); });
+      window.addEventListener('resize', fit);
+    })();
+  </script>
   <title>FieldCam</title>
   <meta name="theme-color" content="#0e1113">
   <meta name="color-scheme" content="dark light">

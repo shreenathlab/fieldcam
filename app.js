@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.3.2';
+const APP_VERSION = '4.3.3';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
