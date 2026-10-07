@@ -1,11 +1,14 @@
-/* FieldCam service worker: caches the app itself so it opens without signal.
-   Photos and uploads never pass through this cache. */
-const CACHE = 'fieldcam-v4.2.0';
+/* FieldCam service worker: keeps a copy of the app on the phone.
+   The app opens instantly from that copy (no waiting for the network), and the newest version is
+   fetched in the background — it is used the next time FieldCam is opened.
+   Photos and uploads never pass through this cache; the Android APK is always fetched fresh. */
+const CACHE = 'fieldcam-v4.3.0';
 const SHELL = ['./', 'index.html', 'styles.css', 'config.js', 'app.js', 'manifest.webmanifest',
   'fonts/RobotoCondensed.ttf', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // 'reload' = straight from the website, never an older copy from the browser's own cache
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 self.addEventListener('activate', (e) => {
   e.waitUntil(caches.keys()
@@ -15,13 +18,16 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
-  if (req.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/api/')) return; // network only
-  // Network first (so updates arrive), fall back to cache when offline.
-  e.respondWith(
-    fetch(req).then((res) => {
-      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
-      return res;
-    }).catch(() => caches.match(req, { ignoreSearch: true })
-      .then((hit) => hit || (req.mode === 'navigate' ? caches.match('index.html') : Response.error())))
-  );
+  if (req.method !== 'GET' || url.origin !== location.origin || url.pathname.includes('/api/') || url.pathname.includes('/android/')) return;
+  e.respondWith(caches.open(CACHE).then(async (cache) => {
+    const hit = await cache.match(req, { ignoreSearch: true });
+    const fresh = fetch(req, { cache: 'no-cache' })
+      .then((res) => { if (res.ok) cache.put(req, res.clone()); return res; })
+      .catch(() => null);
+    if (hit) { e.waitUntil(fresh); return hit; }          // instant: saved copy now, newest copy for next time
+    const res = await fresh;
+    if (res) return res;
+    if (req.mode === 'navigate') return (await cache.match('index.html')) || Response.error();
+    return Response.error();
+  }));
 });

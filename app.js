@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.2.0';
+const APP_VERSION = '4.3.0';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -22,12 +22,12 @@ function apiUrl(path) {
   return nasUrl.replace(/\/+$/, '') + '/api/' + path;
 }
 // Google Drive needs pieces in multiples of 256 KB; the NAS's default PHP upload limit needs them small.
-const CHUNK = (GAS_URL ? 3 : 1.5) * 1024 * 1024;
+const CHUNK = (GAS_URL ? 5 : 1.5) * 1024 * 1024;   // bigger pieces = fewer round trips to Google (faster)
 const MAX_VIDEO_SEC = 30 * 60;
 const $ = (id) => document.getElementById(id);
 
-const LAB_ITEMS = [['job_number', 'Job number'], ['site_name', 'Site name'], ['test_name', 'Test name'], ['datetime', 'Date & time']];
-const FIELD_ITEMS = [['logo', 'Company logo'], ['datetime', 'Date & time'], ['coords', 'Coordinates'], ['location_name', 'Location name'], ['site_name', 'Site name'], ['test_name', 'Field test name'], ['custom_text', 'Your text']];
+const LAB_ITEMS = [['job_number', 'Job number'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['datetime', 'Date & time']];
+const FIELD_ITEMS = [['logo', 'Company logo'], ['datetime', 'Date & time'], ['coords', 'Coordinates'], ['location_name', 'Site location'], ['site_name', 'Project name'], ['test_name', 'Field test name'], ['custom_text', 'Your text']];
 const COORD_FORMATS = [['decimal', 'Decimal degrees'], ['dms', 'Deg° Min′ Sec″'], ['ddm', 'Deg° Decimal-min′'], ['utm', 'UTM']];
 const TEXT_SIZES = [['small', 'Small'], ['large', 'Large'], ['xlarge', 'Extra large']];
 const BANDS = [['strip', 'Strip (full width)'], ['box', 'Box (fits the text)'], ['none', 'None (outlined text)']];
@@ -227,6 +227,23 @@ function toUTM(lat, lon) {
   const band = 'CDEFGHJKLMNPQRSTUVWXX'[Math.max(0, Math.min(20, Math.floor((lat + 80) / 8)))];
   return { zone, band, E, N: Nn };
 }
+/** UTM (WGS 84) → latitude/longitude, for coordinates typed in as UTM. */
+function fromUTM(zone, band, E, N) {
+  const a = 6378137, f = 1 / 298.257223563, k0 = 0.9996, e2 = f * (2 - f), ep2 = e2 / (1 - e2);
+  const north = band.toUpperCase() >= 'N';
+  const x = E - 500000, y = north ? N : N - 10000000;
+  const mu = y / k0 / (a * (1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256));
+  const e1 = (1 - Math.sqrt(1 - e2)) / (1 + Math.sqrt(1 - e2));
+  const p1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * Math.sin(2 * mu) + (21 * e1 ** 2 / 16 - 55 * e1 ** 4 / 32) * Math.sin(4 * mu)
+    + (151 * e1 ** 3 / 96) * Math.sin(6 * mu) + (1097 * e1 ** 4 / 512) * Math.sin(8 * mu);
+  const s = Math.sin(p1), c = Math.cos(p1), t = Math.tan(p1);
+  const N1 = a / Math.sqrt(1 - e2 * s * s), T1 = t * t, C1 = ep2 * c * c, R1 = a * (1 - e2) / Math.pow(1 - e2 * s * s, 1.5), D = x / (N1 * k0);
+  const lat = p1 - (N1 * t / R1) * (D * D / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 * C1 - 9 * ep2) * D ** 4 / 24
+    + (61 + 90 * T1 + 298 * C1 + 45 * T1 * T1 - 252 * ep2 - 3 * C1 * C1) * D ** 6 / 720);
+  const lon = ((zone - 1) * 6 - 180 + 3) * Math.PI / 180
+    + (D - (1 + 2 * T1 + C1) * D ** 3 / 6 + (5 - 2 * C1 + 28 * T1 - 3 * C1 * C1 + 8 * ep2 + 24 * T1 * T1) * D ** 5 / 120) / c;
+  return { lat: lat * 180 / Math.PI, lon: lon * 180 / Math.PI };
+}
 function fmtCoords(lat, lon, fmt) {
   const ns = lat >= 0 ? 'N' : 'S', ew = lon >= 0 ? 'E' : 'W';
   const la = Math.abs(lat), lo = Math.abs(lon);
@@ -269,21 +286,23 @@ function locationName() {
   return state.job?.location_name || '';
 }
 /** Everything that goes onto the photo, as plain text lines + logo placement. */
-function buildStamp(type, when, gps) {
-  const c = stampConf(type), job = state.job, d = currentDetails(), lines = [];
+function buildStamp(type, when, gps, ov) {
+  // ov (uploaded photos): { details, coordText } typed in by the user instead of this phone's camera details/GPS
+  const c = stampConf(type), job = state.job, d = ov?.details || currentDetails(), lines = [];
   let coordText = '';
-  if (gps) coordText = fmtCoords(gps.lat, gps.lon, c.coord_format || 'utm');
+  if (ov && ov.coordText !== undefined) coordText = ov.coordText;
+  else if (gps) coordText = fmtCoords(gps.lat, gps.lon, c.coord_format || 'utm');
   if (type === 'Laboratory') {
     if (c.job_number) lines.push(`Job No: ${job.job_number}`);
-    if (c.site_name) lines.push(`Site: ${job.site_name}`);
+    if (c.site_name) lines.push(`Project: ${job.site_name}`);
     if (c.test_name && d.test_name) lines.push(`Test: ${d.test_name}`);
     if (c.datetime) lines.push(fmtDate(when));
     return { lines, logo: false, coordText, style: stampStyle(c) };
   }
   if (c.datetime) lines.push(fmtDate(when));
-  if (c.coords) lines.push(gps ? coordText : 'Coordinates: not available');
+  if (c.coords) lines.push(coordText || 'Coordinates: not available');
   if (c.location_name && locationName()) lines.push(locationName());
-  if (c.site_name) lines.push(`Site: ${job.site_name}`);
+  if (c.site_name) lines.push(`Project: ${job.site_name}`);
   if (c.test_name && d.field_test) lines.push(`Test: ${d.field_test}`);
   if (c.custom_text && d.custom_text) lines.push(d.custom_text);
   return { lines, logo: !!(c.logo && state.logo), corner: c.logo_corner || 'top-left', logoSize: c.logo_size, logoOpacity: c.logo_opacity, coordText, style: stampStyle(c) };
@@ -454,7 +473,7 @@ window.addEventListener('popstate', () => {
 let openSheetId = null;
 const SHEET_RENDER = {
   detailsSheet: renderDetails, queueSheet: renderQueue,
-  settingsSheet: renderSettings, jobSheet: renderJobSheet, adminSheet: renderAdmin,
+  settingsSheet: renderSettings, jobSheet: renderJobSheet, adminSheet: renderAdmin, uploadSheet: renderUpload,
 };
 function openSheet(id) {
   if (openSheetId) { $(openSheetId).hidden = true; if (openSheetId === 'queueSheet') revokeThumbs(); }
@@ -827,12 +846,14 @@ function renderJobSheet() {
   $('jActiveRow').hidden = !j;
   $('jActive').checked = j ? !!j.active : true;
   $('jSaveLocal').checked = !!j?.save_local;   // off by default
+  $('jobDelete').hidden = !j || !GAS_URL;      // admins can delete a wrong job entry
   $('jobErr').textContent = '';
   updateFolderHint();
 }
 function updateFolderHint() {
   const no = $('jNo').value.trim(), site = $('jSite').value.trim();
-  $('jFolder').textContent = no && site ? `${STORE} folder: Testing Photographs / ${no} - ${site}` : '';
+  const loc = $('jLoc').value.trim();
+  $('jFolder').textContent = no && site ? `${STORE} folder: Testing Photographs / ${no} - ${site}${loc ? ' - ' + loc : ''}` : '';
 }
 async function saveJob(e) {
   e.preventDefault();
@@ -850,6 +871,29 @@ async function saveJob(e) {
     closeSheet();
     loadBootstrap();
   } finally { $('jobSave').disabled = false; }
+}
+
+/** Admin: delete a wrong job entry. Photos already in Google Drive are never deleted. */
+async function deleteJob() {
+  const j = state.editingJob; if (!j) return;
+  const waiting = (await qAll()).filter((r) => r.meta?.job_id === j.id).length;
+  const ok = await askConfirm({
+    title: `Delete job ${j.job_number}?`,
+    html: `<p>The job is removed from the job list for everyone. Use this for a <b>wrong job entry</b>.</p>
+      <p><b>Photos and videos already in ${esc(STORE_THE)} are not deleted.</b> If the job has no photos, its (empty) folder is removed.</p>
+      ${waiting ? `<p class="warn-line">${waiting} photo(s)/video(s) of this job are still waiting on this phone — they will still upload.</p>` : ''}`,
+    yes: 'Delete job',
+  });
+  if (!ok) return;
+  $('jobDelete').disabled = true;
+  try {
+    const r = await api('admin.php', { json: { action: 'job_delete', id: j.id } });
+    if (!r.ok) { $('jobErr').textContent = r.error || 'Could not delete the job'; return; }
+    state.jobs = state.jobs.filter((x) => x.id !== j.id); kvSet('jobs', state.jobs);
+    state.editingJob = null;
+    toast(r.folder_kept ? `Job ${j.job_number} deleted — its photos stay in ${STORE_THE}` : `Job ${j.job_number} deleted`);
+    closeSheet(); renderJobs(); loadBootstrap();
+  } finally { $('jobDelete').disabled = false; }
 }
 
 /* ======================= Lab / Field choice ======================= */
@@ -1007,20 +1051,35 @@ async function startCamera() {
   stopCamera();
   $('camError').hidden = true;
   if (!navigator.mediaDevices?.getUserMedia) return camFail('This browser cannot open the camera. Open the app over https:// in Chrome (Android) or Safari (iPhone).');
+  // Phones with several back lenses: use the MAIN camera (not telephoto/macro), so 1.0× looks the same on every phone
+  const mainId = state.facing === 'environment' && !state.noMainCam ? mainBackCameraId() : null;
+  const which = mainId ? { deviceId: { exact: mainId } } : { facingMode: { ideal: state.facing } };
   const video = state.mode === 'video'
     ? (() => {                                   // "Device best" asks for the highest the phone offers (up to 4K)
         const r = state.settings?.video?.max_res || 3840;
-        return { facingMode: { ideal: state.facing }, width: { ideal: r }, height: { ideal: Math.round(r * 9 / 16) }, frameRate: { ideal: 30 } };
+        return { ...which, width: { ideal: r }, height: { ideal: Math.round(r * 9 / 16) }, frameRate: { ideal: 30 } };
       })()
-    : { facingMode: { ideal: state.facing }, width: { ideal: 8192 }, height: { ideal: 6144 } };   // highest the camera allows
+    // Photos are taken with the camera's still-photo capture where available, so the live picture can be
+    // lighter (faster, smoother); without it (iPhone) the photo comes from the live picture, so ask for the most.
+    : ('ImageCapture' in window
+      ? { ...which, width: { ideal: 1920 }, height: { ideal: 1440 } }
+      : { ...which, width: { ideal: 4032 }, height: { ideal: 3024 } });
   const wantAudio = state.mode === 'video' && state.settings?.video?.audio !== false;
   try {
     state.stream = await openCamera(video, wantAudio);
   } catch (e) {
+    if (mainId && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {   // remembered lens is gone
+      forgetMainCamera(); state.noMainCam = true; return startCamera();   // don't try again this session
+    }
     if (wantAudio && e.name === 'NotAllowedError') {
       try { state.stream = await openCamera(video, false); toast('Microphone not allowed — videos will be silent'); }
       catch (e2) { return camFail(camMsg(e2)); }
     } else return camFail(camMsg(e));
+  }
+  // First time on this phone: once the camera is allowed, the lens names are known — switch to the main lens if needed
+  if (state.facing === 'environment' && !mainId && !state.noMainCam && await findMainBackCamera()) {
+    const now = state.stream.getVideoTracks()[0]?.getSettings?.().deviceId;
+    if (now && now !== mainBackCameraId()) return startCamera();
   }
   state.streamMode = state.mode;
   const v = $('video');
@@ -1046,6 +1105,25 @@ function stopCamera() {
   state.stream?.getTracks().forEach((t) => t.stop());
   state.stream = state.track = state.imageCapture = null;
 }
+/* ---------- main back camera (Android phones with several back lenses) ---------- */
+function mainBackCameraId() { try { return localStorage.getItem('fc-main-cam') || null; } catch { return null; } }
+function forgetMainCamera() { try { localStorage.removeItem('fc-main-cam'); } catch {} }
+/** Android names the lenses "camera2 0, facing back", "camera2 2, facing back"…; the lowest number is the main camera.
+ *  iPhones pick the main camera by themselves, so they are left alone. Returns true when found. */
+async function findMainBackCamera() {
+  if (IOS || !navigator.mediaDevices?.enumerateDevices) return false;
+  try {
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput' && /back|rear|environment/i.test(d.label));
+    if (cams.length < 2) return false;                     // only one back camera: nothing to choose
+    const num = (d) => { const m = /camera\s*2?\s*(\d+)/i.exec(d.label); return m ? +m[1] : 999; };
+    const skip = (d) => /tele|macro|depth|ultra|wide-angle|wide angle/i.test(d.label) ? 1 : 0;
+    cams.sort((a, b) => skip(a) - skip(b) || num(a) - num(b));
+    if (!cams[0].deviceId) return false;
+    localStorage.setItem('fc-main-cam', cams[0].deviceId);
+    return true;
+  } catch { return false; }
+}
+
 /** Opens the camera, asking for its zoom control too (Chrome); falls back when that isn't supported. */
 async function openCamera(video, audio) {
   try { return await navigator.mediaDevices.getUserMedia({ video: { ...video, zoom: true }, audio }); }
@@ -1237,13 +1315,19 @@ function drawPreview() {
 async function grabFrame() {
   if (state.imageCapture) {
     try {
-      // Ask for the camera's full still-photo resolution (often higher than the live preview)
+      // Ask the camera for a still photo of the size we will keep — not 50 MP that would only be shrunk (much faster)
       let opts;
       try {
         const pc = await state.imageCapture.getPhotoCapabilities();
-        if (pc?.imageWidth?.max) opts = { imageWidth: pc.imageWidth.max, imageHeight: pc.imageHeight.max };
+        if (pc?.imageWidth?.max) {
+          const want = photoConf().max_dim || 4096;           // "Device best" is limited to ~16.5 MP anyway
+          const r = pc.imageWidth.max / pc.imageHeight.max;
+          const w = Math.min(pc.imageWidth.max, Math.max(pc.imageWidth.min || 0, r >= 1 ? want : Math.round(want * r)));
+          opts = { imageWidth: w, imageHeight: Math.round(w / r) };
+        }
       } catch {}
-      return await state.imageCapture.takePhoto(opts);
+      try { return await state.imageCapture.takePhoto(opts); }
+      catch (e) { if (!opts) throw e; return await state.imageCapture.takePhoto(); }   // camera refused that size: its default
     } catch (e) { console.warn('takePhoto failed, using video frame', e); }
   }
   return videoFrame();
@@ -1343,6 +1427,120 @@ function endReview() {
   state.pending = null;
   $('review').hidden = true;
 }
+/* ======================= upload photos from the phone (taken earlier with another camera) ======================= */
+const upload = { files: [], type: 'Field', coordMode: 'latlon', urls: [] };
+const pad2s = (n) => String(n).padStart(2, '0');
+function toLocalInput(d) { return `${d.getFullYear()}-${pad2s(d.getMonth() + 1)}-${pad2s(d.getDate())}T${pad2s(d.getHours())}:${pad2s(d.getMinutes())}`; }
+function onUploadFiles(e) {
+  const files = [...(e.target.files || [])].filter((f) => /^image\//.test(f.type) || /\.(jpe?g|png|heic|webp)$/i.test(f.name));
+  e.target.value = '';
+  if (!files.length) return;
+  upload.files = files;
+  upload.type = state.type || 'Field';
+  $('upWhen').value = toLocalInput(new Date(files[0].lastModified || Date.now()));   // when the photo was taken (best guess)
+  $('upTest').value = ''; $('upText').value = currentDetails().custom_text || '';
+  ['upLat', 'upLon', 'upZone', 'upBand', 'upE', 'upN'].forEach((id) => { $(id).value = ''; });
+  openSheet('uploadSheet');
+}
+function renderUpload() {
+  upload.urls.forEach(URL.revokeObjectURL);
+  upload.urls = upload.files.slice(0, 12).map((f) => URL.createObjectURL(f));
+  $('upThumbs').innerHTML = upload.urls.map((u) => `<img src="${u}" alt="">`).join('')
+    + (upload.files.length > 12 ? `<span class="muted small">+${upload.files.length - 12} more</span>` : '');
+  renderUploadForm(true);
+}
+function renderUploadForm(rebuildList) {
+  const lab = upload.type === 'Laboratory', conf = stampConf(upload.type);
+  $('upType').querySelectorAll('[data-type]').forEach((b) => b.setAttribute('aria-checked', b.dataset.type === upload.type));
+  $('upTestLabel').textContent = lab ? 'Test name' : 'Field test name';
+  $('upTestReq').hidden = !conf.test_name;
+  if (rebuildList) {
+    const d = currentDetails(), cur = lab ? d.test_name : d.field_test;
+    const names = (lab ? state.settings?.test_names : state.settings?.field_test_names) || [];
+    $('upTestSel').innerHTML = `<option value="">— Select ${lab ? 'test' : 'field test'} —</option>`
+      + names.map((n) => `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')
+      + '<option value="__other">Other (type it)</option>';
+  }
+  $('upTestOtherRow').hidden = $('upTestSel').value !== '__other';
+  $('upFieldOnly').hidden = lab;
+  $('upCoordBox').hidden = lab || !conf.coords;
+  $('upCoordMode').querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-checked', b.dataset.mode === upload.coordMode));
+  $('upLatLon').hidden = upload.coordMode !== 'latlon';
+  $('upUtm').hidden = upload.coordMode !== 'utm';
+  const c = readUploadCoords();
+  $('upCoordPreview').textContent = c.error ? '' : c.text ? 'On the photo: ' + c.text : '';
+  $('upGo').textContent = `Stamp & upload ${upload.files.length} photo${upload.files.length === 1 ? '' : 's'}`;
+  $('upErr').textContent = '';
+}
+/** Coordinates typed in → { gps, text } in the company's stamp format, or { error }. */
+function readUploadCoords() {
+  const fmt = stampConf('Field').coord_format || 'utm', num = (id) => Number(String($(id).value).replace(',', '.').trim());
+  if (upload.coordMode === 'latlon') {
+    if (!$('upLat').value.trim() && !$('upLon').value.trim()) return { empty: true };
+    const lat = num('upLat'), lon = num('upLon');
+    if (!isFinite(lat) || lat < -90 || lat > 90 || !isFinite(lon) || lon < -180 || lon > 180) return { error: 'Latitude must be −90 to 90 and longitude −180 to 180 (decimal degrees, e.g. 22.303900).' };
+    return { gps: { lat, lon, accuracy: null, altitude: null }, text: fmtCoords(lat, lon, fmt) };
+  }
+  if (!['upZone', 'upBand', 'upE', 'upN'].some((id) => $(id).value.trim())) return { empty: true };
+  const zone = num('upZone'), band = $('upBand').value.trim().toUpperCase(), E = num('upE'), N = num('upN');
+  if (!(zone >= 1 && zone <= 60 && Number.isInteger(zone)) || !/^[C-HJ-NP-X]$/.test(band) || !(E >= 100000 && E <= 900000) || !(N >= 0 && N <= 10000000)) {
+    return { error: 'UTM: zone 1–60, band letter (e.g. Q), easting 100000–900000 m, northing 0–10000000 m.' };
+  }
+  const ll = fromUTM(zone, band, E, N);
+  const text = fmt === 'utm' ? `${zone} ${band} ${E.toFixed(2)} m E ${N.toFixed(2)} m N` : fmtCoords(ll.lat, ll.lon, fmt);
+  return { gps: { lat: ll.lat, lon: ll.lon, accuracy: null, altitude: null }, text };
+}
+async function submitUpload(e) {
+  e.preventDefault();
+  const lab = upload.type === 'Laboratory', conf = stampConf(upload.type);
+  const sel = $('upTestSel').value, test = sel === '__other' ? $('upTest').value.trim() : sel;
+  if (conf.test_name && !test) { $('upErr').textContent = `Please choose the ${lab ? 'test' : 'field test'} name`; return; }
+  let coords = { empty: true };
+  if (!lab && conf.coords) {
+    coords = readUploadCoords();
+    if (coords.error) { $('upErr').textContent = coords.error; return; }
+    if (coords.empty) { $('upErr').textContent = 'Please type the coordinates of the place where the photos were taken'; return; }
+  }
+  const when = $('upWhen').value ? new Date($('upWhen').value) : new Date();
+  if (isNaN(when)) { $('upErr').textContent = 'Please enter the date and time'; return; }
+  const details = lab ? { test_name: test } : { field_test: test, custom_text: $('upText').value.trim() };
+  const btn = $('upGo'); btn.disabled = true;
+  let done = 0;
+  try {
+    try { await document.fonts?.load(`600 20px ${STAMP_FONT}`); } catch {}
+    const pc = photoConf();
+    for (const file of upload.files) {
+      btn.textContent = `Stamping ${done + 1} of ${upload.files.length}…`;
+      const bmp = await toBitmap(file);
+      const sw = bmp.width, sh = bmp.height;
+      let scale = pc.max_dim ? Math.min(1, pc.max_dim / Math.max(sw, sh)) : 1;
+      if (sw * sh * scale * scale > 16.5e6) scale = Math.sqrt(16.5e6 / (sw * sh));
+      const w = Math.round(sw * scale), h = Math.round(sh * scale);
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const ctx = c.getContext('2d'); ctx.drawImage(bmp, 0, 0, w, h); bmp.close?.();
+      const stamp = buildStamp(upload.type, when, coords.gps || null, { details, coordText: coords.text || '' });
+      const meta = baseMeta('photo', when, coords.gps || null, stamp);
+      Object.assign(meta, {
+        type: upload.type, test_name: test, source: 'upload',
+        custom_text: lab ? '' : details.custom_text, location_name: lab ? '' : locationName(),
+        stamp_lines: drawStamp(ctx, w, h, stamp), width: w, height: h,
+      });
+      const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', pc.quality));
+      c.width = c.height = 0;
+      if (!blob) throw new Error('Could not read ' + file.name);
+      await savePhoto(blob, meta, { noLocal: true, quiet: true });
+      done++;
+    }
+    // remember the choice for the next photos of this job
+    const d = currentDetails(); if (lab) d.test_name = test; else { d.field_test = test; d.custom_text = details.custom_text; }
+    kvSet('jobDetails', state.jobDetails);
+    closeSheet();
+    toast(`${done} photo${done === 1 ? '' : 's'} stamped — uploading…`);
+  } catch (err) {
+    $('upErr').textContent = (err && err.message ? err.message : 'Could not read the photo') + (done ? ` (${done} already saved)` : '');
+  } finally { btn.disabled = false; renderUploadForm(false); }
+}
+
 /* ---------- optional copy of Field photos on this phone (per-job switch) ---------- */
 function localName(meta) {
   const d = new Date(meta.captured_at), safe = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
@@ -1367,9 +1565,9 @@ async function saveToPhone(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 60000);
   return true;
 }
-async function savePhoto(blob, meta) {
-  // Admin switched on "Save Field photos on phones too" for this job (New / Edit job)
-  if (meta.type === 'Field' && state.job?.save_local) {
+async function savePhoto(blob, meta, opts = {}) {
+  // Admin switched on "Save Field photos on phones too" for this job (New / Edit job); not for photos uploaded from the phone
+  if (!opts.noLocal && meta.type === 'Field' && state.job?.save_local) {
     try { await saveToPhone(blob, localName(meta)); } catch (e) { toast('Could not save on the phone', true); }
   }
   const buf = await blob.arrayBuffer();
@@ -1377,7 +1575,7 @@ async function savePhoto(blob, meta) {
   for (let i = 0; i < total; i++) await chunkPut(meta.uid, i, await seal(buf.slice(i * CHUNK, (i + 1) * CHUNK)));
   await qPut({ uid: meta.uid, kind: 'photo', ext: 'jpg', meta, total, sent: 0, complete: true, created: Date.now(), size: buf.byteLength, status: 'pending', error: '' });
   refreshBadge();
-  toast(navigator.onLine ? 'Saved — uploading…' : 'Saved — will upload when online');
+  if (!opts.quiet) toast(navigator.onLine ? 'Saved — uploading…' : 'Saved — will upload when online');
   syncQueue();
 }
 
@@ -1548,11 +1746,16 @@ async function syncQueue() {
   state.syncing = true; renderNet();
   try {
     const items = (await qAll()).filter((r) => r.complete).sort((a, b) => a.created - b.created);
-    for (const rec of items) {
-      const res = await uploadRecord(rec);
-      refreshBadge();
-      if (res === 'auth' || res === 'offline') break;
-    }
+    // two photos/videos upload at the same time (faster on good networks)
+    let next = 0, stop = false;
+    const worker = async () => {
+      while (!stop && next < items.length) {
+        const res = await uploadRecord(items[next++]);
+        refreshBadge();
+        if (res === 'auth' || res === 'offline') stop = true;
+      }
+    };
+    await Promise.all([worker(), worker()]);
   } catch (e) { console.warn('sync', e); }
   finally {
     state.syncing = false;
@@ -1668,8 +1871,8 @@ function drawSamples() {
     grd.addColorStop(0, '#6b8f5a'); grd.addColorStop(1, '#b8a47a');
     ctx.fillStyle = grd; ctx.fillRect(0, 0, cv.width, cv.height);
     const lines = g === 'lab'
-      ? ['Job No: JN-2026/045', 'Site: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', '27 September, 2026 | 02:30 PM']
-      : ['27 September, 2026 | 02:30 PM', fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Site: Rajkot Ring Road Bridge', 'Test: Plate Load Test'];
+      ? ['Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', '27 September, 2026 | 02:30 PM']
+      : ['27 September, 2026 | 02:30 PM', fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Project: Rajkot Ring Road Bridge', 'Test: Plate Load Test'];
     const logoOn = g === 'field' && conf.logo !== false && !!state.logo;
     drawStamp(ctx, cv.width, cv.height, { lines, style: stampStyle(conf), logo: logoOn, corner: conf.logo_corner || 'top-left', logoSize: conf.logo_size, logoOpacity: conf.logo_opacity });
   });
@@ -1812,6 +2015,8 @@ function wire() {
   $('jobForm').addEventListener('submit', saveJob);
   $('jNo').addEventListener('input', updateFolderHint);
   $('jSite').addEventListener('input', updateFolderHint);
+  $('jLoc').addEventListener('input', updateFolderHint);
+  $('jobDelete').addEventListener('click', deleteJob);
   $('jobsQueueBtn').addEventListener('click', () => openSheet('queueSheet'));
   $('jobsSettingsBtn').addEventListener('click', () => openSheet('settingsSheet'));
   $('typeBack').addEventListener('click', goBack);
@@ -1842,6 +2047,14 @@ function wire() {
   $('changeNasBtn').addEventListener('click', () => ANDROID_APP?.changeServer());
   $('themeSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-theme]'); if (b) applyTheme(b.dataset.theme); });
   $('submitJobBtn').addEventListener('click', submitJob);
+  // upload photos from the phone
+  $('uploadPick').addEventListener('click', () => $('uploadInput').click());
+  $('uploadInput').addEventListener('change', onUploadFiles);
+  $('upType').addEventListener('click', (e) => { const b = e.target.closest('[data-type]'); if (!b) return; upload.type = b.dataset.type; renderUploadForm(true); });
+  $('upCoordMode').addEventListener('click', (e) => { const b = e.target.closest('[data-mode]'); if (!b) return; upload.coordMode = b.dataset.mode; renderUploadForm(false); });
+  $('upTestSel').addEventListener('change', () => renderUploadForm(false));
+  ['upLat', 'upLon', 'upZone', 'upBand', 'upE', 'upN'].forEach((id) => $(id).addEventListener('input', () => renderUploadForm(false)));
+  $('uploadForm').addEventListener('submit', submitUpload);
   $('jobTabs').addEventListener('click', (e) => {
     const b = e.target.closest('[data-tab]'); if (!b) return;
     state.jobTab = b.dataset.tab; renderJobs();
@@ -1908,11 +2121,17 @@ function wire() {
   applyTheme(currentTheme());
   enhanceAllSelects();
   // Sheets (admin settings, details) are re-drawn often: give new <select>s the custom drop-down too
-  new MutationObserver(enhanceAllSelects).observe(document.body, { childList: true, subtree: true });
+  let ddQueued = false;                                  // at most once per screen frame (cheap)
+  new MutationObserver(() => { if (ddQueued) return; ddQueued = true; requestAnimationFrame(() => { ddQueued = false; enhanceAllSelects(); }); }).observe(document.body, { childList: true, subtree: true });
   document.querySelectorAll('[data-store]').forEach((el) => { el.textContent = el.dataset.store === 'the' ? STORE_THE : STORE; });
   document.fonts?.load(`600 20px ${STAMP_FONT}`).then(() => { drawPreview(); }).catch(() => {});
   // Offline cache for the browser version; the installed app already carries its files
-  if ('serviceWorker' in navigator && !IS_NATIVE) navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && !IS_NATIVE) {
+    const hadSw = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+    // A new version was downloaded in the background: it is used from the next opening
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSw) toast('FieldCam was updated — close and reopen the app to use the new version', false, 6000); });
+  }
   try {
     const keys = ['auth', 'jobs', 'settings', 'jobDetails', 'nasUrl', 'photographer'];
     const [auth, jobs, settings, jobDetails, savedNas, photographer] = await Promise.all(keys.map(kvGet));

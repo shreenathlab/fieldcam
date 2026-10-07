@@ -96,15 +96,17 @@
       <button class="type-card" data-type="Laboratory">
         <svg viewBox="0 0 48 48"><path d="M18 6h12M20 6v12L9 38a3 3 0 002.7 4h24.6a3 3 0 002.7-4L28 18V6M14 30h20"/></svg>
         <b>Laboratory</b>
-        <span>Job no., site, test name, date &amp; time</span>
+        <span>Job no., project, test name, date &amp; time</span>
       </button>
       <button class="type-card" data-type="Field">
         <svg viewBox="0 0 48 48"><path d="M24 43s14-12.4 14-24a14 14 0 00-28 0c0 11.6 14 24 14 24z"/><circle cx="24" cy="19" r="5"/></svg>
         <b>Field</b>
-        <span>Logo, date &amp; time, coordinates, location, site, your text</span>
+        <span>Logo, date &amp; time, coordinates, site location, project, your text</span>
       </button>
     </div>
-    <div class="submit-box" id="submitBox" hidden>
+    <!-- photos taken earlier with another camera: stamp them here and file them in this job -->
+    <button class="btn wide upload-btn" id="uploadPick" type="button">⬆ Upload photos from phone</button>
+    <input type="file" id="uploadInput" accept="image/*" multiple hidden>    <div class="submit-box" id="submitBox" hidden>
       <p class="muted small">All tests for this job finished?</p>
       <button class="btn wide submit-btn" id="submitJobBtn" type="button">✓ Submit job — all tests done</button>
     </div>
@@ -229,6 +231,46 @@
 </section>
 
 
+<!-- upload photos from the phone: details for the stamp, coordinates typed in -->
+<section id="uploadSheet" class="sheet tall" hidden>
+  <div class="sheet-head"><h2>Upload photos</h2><button class="x" data-close>✕</button></div>
+  <form id="uploadForm" class="sheet-body" novalidate>
+    <div class="up-thumbs" id="upThumbs"></div>
+    <p class="set-label">Photo type</p>
+    <div class="seg" id="upType" role="radiogroup" aria-label="Photo type">
+      <button type="button" role="radio" data-type="Laboratory">Laboratory</button>
+      <button type="button" role="radio" data-type="Field">Field</button>
+    </div>
+    <label><span id="upTestLabel">Test name</span> <b class="req" id="upTestReq">*</b>
+      <select id="upTestSel"></select>
+    </label>
+    <label id="upTestOtherRow" hidden>Type the test name<input id="upTest" autocomplete="off" placeholder="Test not in the list"></label>
+    <div id="upFieldOnly">
+      <label>Your text on the photo<textarea id="upText" rows="2" placeholder="e.g. Pier P4 – concrete pouring"></textarea></label>
+      <div id="upCoordBox">
+        <p class="set-label">Coordinates <b class="req">*</b></p>
+        <div class="seg" id="upCoordMode" role="radiogroup" aria-label="Coordinates entered as">
+          <button type="button" role="radio" data-mode="latlon">Lat / Long</button>
+          <button type="button" role="radio" data-mode="utm">UTM</button>
+        </div>
+        <div class="two-col" id="upLatLon">
+          <label>Latitude<input id="upLat" inputmode="decimal" autocomplete="off" placeholder="22.303900"></label>
+          <label>Longitude<input id="upLon" inputmode="decimal" autocomplete="off" placeholder="70.802200"></label>
+        </div>
+        <div class="two-col" id="upUtm" hidden>
+          <label>Zone<input id="upZone" inputmode="numeric" autocomplete="off" placeholder="42"></label>
+          <label>Band<input id="upBand" maxlength="1" autocomplete="off" autocapitalize="characters" placeholder="Q"></label>
+          <label>Easting (m E)<input id="upE" inputmode="decimal" autocomplete="off" placeholder="759213.00"></label>
+          <label>Northing (m N)<input id="upN" inputmode="decimal" autocomplete="off" placeholder="2360761.00"></label>
+        </div>
+        <p class="muted small" id="upCoordPreview"></p>
+      </div>
+    </div>
+    <label>Date &amp; time on the stamp<input id="upWhen" type="datetime-local"></label>
+    <p id="upErr" class="err" role="alert"></p>
+    <button type="submit" class="btn primary wide" id="upGo">Stamp &amp; upload</button>
+  </form>
+</section>
 <section id="queueSheet" class="sheet" hidden>
   <div class="sheet-head"><h2>Upload queue</h2><button class="x" data-close>✕</button></div>
   <div class="sheet-body">
@@ -264,8 +306,8 @@
   <div class="sheet-head"><h2 id="jobSheetTitle">New job</h2><button class="x" data-close>✕</button></div>
   <form id="jobForm" class="sheet-body">
     <label>Job number <b class="req">*</b><input id="jNo" required autocomplete="off" autocapitalize="characters"></label>
-    <label>Site name <b class="req">*</b><input id="jSite" required autocomplete="off"></label>
-    <label>Location name <b class="req">*</b><input id="jLoc" required autocomplete="off" placeholder="e.g. Madhapar, Rajkot, Gujarat"></label>
+    <label>Project name <b class="req">*</b><input id="jSite" required autocomplete="off" placeholder="e.g. Rajkot Ring Road Bridge"></label>
+    <label>Site location <b class="req">*</b><input id="jLoc" required autocomplete="off" placeholder="e.g. Madhapar, Rajkot, Gujarat"></label>
     <p class="muted small" id="jFolder"></p>
     <!-- admin's per-job choice (staff never see it); off by default -->
     <label class="switch-row" id="jSaveLocalRow">
@@ -275,6 +317,7 @@
     <label class="check" id="jActiveRow"><input type="checkbox" id="jActive"> Show this job to staff</label>
     <p id="jobErr" class="err" role="alert"></p>
     <button type="submit" class="btn primary wide" id="jobSave">Create job</button>
+    <button type="button" class="btn wide danger" id="jobDelete" hidden>Delete this job</button>
   </form>
 </section>
 
