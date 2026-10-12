@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.0';
+const APP_VERSION = '4.4.1';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -991,18 +991,51 @@ function selectRow(label, key, opts, val) {
   return `<label class="toggle-row">${esc(label)}<select data-k="${key}">${opts.map(([v, t]) => `<option value="${v}" ${v === val ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>`;
 }
 /* ======================= GPS & location name ======================= */
+/* Phones mix two kinds of position: the GPS chip (±3–15 m) and a rough one from mobile towers / Wi-Fi
+   (±100–1500 m). Taking simply the latest reading lets a rough one replace a good GPS fix. So the app keeps
+   the best fix: a rougher reading is ignored while a better one is recent and it agrees with it; good
+   readings taken while the phone stands still are averaged (weighted by accuracy) for the most probable spot. */
+const GPS_KEEP_MS = 30000;
+let gpsFixes = [];
+function onGpsFix(p) {
+  const now = Date.now(), c = p.coords;
+  if (!isFinite(c.latitude) || !isFinite(c.longitude) || !(c.accuracy > 0)) return;
+  const fix = { lat: c.latitude, lon: c.longitude, accuracy: c.accuracy, altitude: c.altitude, at: now };
+  gpsFixes = gpsFixes.filter((f) => now - f.at < GPS_KEEP_MS);
+  const best = gpsFixes.reduce((b, f) => (!b || f.accuracy < b.accuracy ? f : b), null);
+  // Rough reading while a better recent one exists and lies within its range → ignore it
+  if (best && fix.accuracy > best.accuracy * 1.5 && distM(best, fix) <= fix.accuracy + best.accuracy) { renderGps(); return; }
+  // Moved clearly (outside both ranges) → start again from this reading
+  if (best && distM(best, fix) > fix.accuracy + best.accuracy) gpsFixes = [];
+  gpsFixes.push(fix);
+  const top = gpsFixes.reduce((b, f) => (f.accuracy < b.accuracy ? f : b));
+  const use = gpsFixes.filter((f) => f.accuracy <= top.accuracy * 2 && distM(f, top) <= top.accuracy * 2 + 5);
+  let w = 0, lat = 0, lon = 0;
+  use.forEach((f) => { const k = 1 / (f.accuracy * f.accuracy); w += k; lat += f.lat * k; lon += f.lon * k; });
+  state.gps = { lat: lat / w, lon: lon / w, accuracy: top.accuracy, altitude: top.altitude ?? fix.altitude, at: now, n: use.length };
+  renderGps();
+}
 function startGps() {
   if (!('geolocation' in navigator) || state.gpsWatch !== null) return;
-  state.gpsWatch = navigator.geolocation.watchPosition((p) => {
-    state.gps = { lat: p.coords.latitude, lon: p.coords.longitude, accuracy: p.coords.accuracy, altitude: p.coords.altitude, at: Date.now() };
-    renderGps();
-  }, (err) => { renderGps(err.code === 1 ? 'GPS blocked' : 'No GPS'); },
-  { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
+  // maximumAge 0: always a new reading from the GPS chip, never an old rough one kept by the phone
+  state.gpsWatch = navigator.geolocation.watchPosition(onGpsFix,
+    (err) => { renderGps(err.code === 1 ? 'GPS blocked' : 'No GPS'); },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 60000 });
 }
 function stopGps() { if (state.gpsWatch !== null) navigator.geolocation.clearWatch(state.gpsWatch); state.gpsWatch = null; }
 function freshGps() { return state.gps && Date.now() - state.gps.at < 120000 ? state.gps : null; }
+/* Only rough readings (worse than ±200 m) for over a minute: the phone is almost certainly giving FieldCam
+   "Approximate" location only (Android 12+ / iPhone "Precise: off"), or the phone's GPS is switched off. */
+let gpsRoughSince = 0;
+function roughOnly() {
+  const g = freshGps();
+  if (!g || g.accuracy <= 200) { gpsRoughSince = 0; return false; }
+  if (!gpsRoughSince) gpsRoughSince = Date.now();
+  return Date.now() - gpsRoughSince > 60000;
+}
 function renderGps(msg) {
   const p = $('gpsPill'), g = freshGps();
+  if (roughOnly()) { p.textContent = `±${Math.round(g.accuracy)} m · Precise off? Tap`; p.className = 'pill gps bad'; return; }
   if (!g) { p.textContent = msg || 'No GPS'; p.className = 'pill bad'; return; }
   // Accuracy is shown here only — never stamped on the photo (it is kept in the CSV log)
   const acc = Math.round(g.accuracy);
@@ -1011,10 +1044,18 @@ function renderGps(msg) {
 }
 /** Tap the GPS pill: the current coordinates with their accuracy (for information only). */
 function showGpsInfo() {
+  if (roughOnly()) {
+    const where = IOS ? 'iPhone Settings › Privacy › Location Services › Safari Websites (or FieldCam) › Precise Location: ON'
+      : ANDROID_APP ? 'Phone Settings › Apps › FieldCam › Permissions › Location › “Use precise location”: ON'
+      : 'Phone Settings › Apps › Chrome › Permissions › Location › “Use precise location”: ON';
+    toast(`The phone gives only rough location (±${Math.round(freshGps().accuracy)} m). Switch on: ${where}. Also keep phone Location on.`, true, 9000);
+    return;
+  }
   const g = freshGps();
   if (!g) { toast('No GPS position yet — go outside / wait a moment', true); return; }
   const fmt = stampConf('Field').coord_format || 'utm';
-  toast(`${fmtCoords(g.lat, g.lon, fmt)}  ·  accuracy ±${Math.round(g.accuracy)} m (not printed on the photo)`, false, 5000);
+  const tip = g.accuracy > 25 ? ' — under open sky it improves within a minute; also switch on Google Location Accuracy in phone settings' : '';
+  toast(`${fmtCoords(g.lat, g.lon, fmt)}  ·  accuracy ±${Math.round(g.accuracy)} m (not printed on the photo)${tip}`, g.accuracy > 25, 6000);
 }
 /* ======================= orientation (photos landscape only) ======================= */
 let heldSideways = null;          // from the motion sensor; null = unknown
@@ -2172,7 +2213,11 @@ function wire() {
   document.addEventListener('visibilitychange', () => {
     if (!state.auth) return;
     if (document.hidden) { if (state.rec) stopRecording(); stopCamera(); }
-    else { if (state.screen === 'cam') startCamera(); syncQueue(); }
+    else {
+      if (state.screen === 'cam') startCamera();
+      syncQueue();
+      stopGps(); startGps();                       // fresh GPS after the app was in the background
+    }
   });
   setInterval(() => syncQueue(), 20000);
   setInterval(() => { renderGps(); if (state.screen === 'cam' && !openSheetId) { drawPreview(); updateOrientation(); } }, 1000);
