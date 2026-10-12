@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.3.4';
+const APP_VERSION = '4.4.0';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -26,8 +26,8 @@ const CHUNK = (GAS_URL ? 5 : 1.5) * 1024 * 1024;   // bigger pieces = fewer roun
 const MAX_VIDEO_SEC = 30 * 60;
 const $ = (id) => document.getElementById(id);
 
-const LAB_ITEMS = [['job_number', 'Sub-Job No.'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['datetime', 'Date & time']];
-const FIELD_ITEMS = [['logo', 'Company logo'], ['datetime', 'Date & time'], ['coords', 'Coordinates'], ['location_name', 'Site location'], ['site_name', 'Project name'], ['test_name', 'Field test name'], ['custom_text', 'Your text']];
+const LAB_ITEMS = [['job_number', 'Sub-Job No.'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['date', 'Date'], ['time', 'Time']];
+const FIELD_ITEMS = [['logo', 'Company logo'], ['date', 'Date'], ['time', 'Time'], ['coords', 'Coordinates'], ['location_name', 'Site location'], ['site_name', 'Project name'], ['test_name', 'Field test name'], ['custom_text', 'Your text']];
 const COORD_FORMATS = [['decimal', 'Decimal degrees'], ['dms', 'Deg° Min′ Sec″'], ['ddm', 'Deg° Decimal-min′'], ['utm', 'UTM']];
 const TEXT_SIZES = [['small', 'Small'], ['large', 'Large'], ['xlarge', 'Extra large']];
 const BANDS = [['strip', 'Strip (full width)'], ['box', 'Box (fits the text)'], ['none', 'None (outlined text)']];
@@ -195,9 +195,12 @@ async function api(path, { body, json, timeout = 30000, raw = false } = {}) {
 const pad2 = (n) => String(n).padStart(2, '0');
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 /** Stamp date & time, e.g. "27 September, 2026 | 04:30 PM" (12-hour, hh:mm). */
-function fmtDate(d) {
-  const h = d.getHours() % 12 || 12;
-  return `${d.getDate()} ${MONTHS[d.getMonth()]}, ${d.getFullYear()} | ${pad2(h)}:${pad2(d.getMinutes())} ${d.getHours() < 12 ? 'AM' : 'PM'}`;
+function fmtStampDay(d) { return `${d.getDate()} ${MONTHS[d.getMonth()]}, ${d.getFullYear()}`; }
+function fmtTime(d) { return `${pad2(d.getHours() % 12 || 12)}:${pad2(d.getMinutes())} ${d.getHours() < 12 ? 'AM' : 'PM'}`; }
+function fmtDate(d) { return `${fmtStampDay(d)} | ${fmtTime(d)}`; }
+/** The stamp's date/time line: Date and Time are separate admin switches (one line when both are on). */
+function dateLine(c, d) {
+  return [c.date ? fmtStampDay(d) : '', c.time ? fmtTime(d) : ''].filter(Boolean).join(' | ');
 }
 function fmtBytes(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.round(n / 1024) + ' KB'; }
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
@@ -273,8 +276,14 @@ function photoConf() {
 }
 function stampConf(type) {
   const s = state.settings || {};
-  const base = { ...(type === 'Laboratory' ? s.lab : s.field) };
-  return base;
+  return withDateTime({ ...(type === 'Laboratory' ? s.lab : s.field) });
+}
+/** Settings saved before 4.4 had one "datetime" switch: it stands for both Date and Time. */
+function withDateTime(c) {
+  const old = c.datetime !== false;
+  if (c.date === undefined) c.date = old;
+  if (c.time === undefined) c.time = old;
+  return c;
 }
 function currentDetails() {
   const id = state.job?.id;
@@ -296,10 +305,10 @@ function buildStamp(type, when, gps, ov) {
     if (c.job_number) lines.push(`Sub-Job No: ${job.job_number}`);
     if (c.site_name) lines.push(`Project: ${job.site_name}`);
     if (c.test_name && d.test_name) lines.push(`Test: ${d.test_name}`);
-    if (c.datetime) lines.push(fmtDate(when));
+    if (dateLine(c, when)) lines.push(dateLine(c, when));
     return { lines, logo: false, coordText, style: stampStyle(c) };
   }
-  if (c.datetime) lines.push(fmtDate(when));
+  if (dateLine(c, when)) lines.push(dateLine(c, when));
   if (c.coords) lines.push(coordText || 'Coordinates: not available');
   if (c.location_name && locationName()) lines.push(locationName());
   if (c.site_name) lines.push(`Project: ${job.site_name}`);
@@ -858,19 +867,31 @@ function updateFolderHint() {
 async function saveJob(e) {
   e.preventDefault();
   const j = state.editingJob;
-  $('jobSave').disabled = true; $('jobErr').textContent = '';
+  const label = $('jobSave').textContent;
+  $('jobSave').disabled = true; $('jobSave').textContent = 'Saving…'; $('jobErr').textContent = '';
   try {
-    const r = await api('admin.php', { json: { action: 'job_save', id: j?.id || '', job_number: $('jNo').value, site_name: $('jSite').value, location_name: $('jLoc').value, save_local: $('jSaveLocal').checked } });
+    const active = j ? $('jActive').checked : true;
+    const r = await api('admin.php', { json: { action: 'job_save', id: j?.id || '', job_number: $('jNo').value, site_name: $('jSite').value, location_name: $('jLoc').value, save_local: $('jSaveLocal').checked, active } });
     if (!r.ok) { $('jobErr').textContent = r.error; return; }
-    if (j && j.active !== $('jActive').checked) {
-      const r2 = await api('admin.php', { json: { action: 'job_active', id: j.id, active: $('jActive').checked } });
+    let job = r.job;
+    if (job && job.active !== active) {                // server older than 4.4: hide/show is a second request
+      const r2 = await api('admin.php', { json: { action: 'job_active', id: job.id, active } });
       if (!r2.ok) { $('jobErr').textContent = r2.error; return; }
+      job = r2.job || job;
+    }
+    // Show the change at once; the full list refreshes in the background
+    if (job) {
+      const i = state.jobs.findIndex((x) => x.id === job.id);
+      if (i >= 0) state.jobs[i] = job; else state.jobs.unshift(job);
+      if (state.job?.id === job.id) state.job = job;
+      kvSet('jobs', state.jobs);
+      renderJobs();
     }
     toast(j ? 'Job updated' : 'Job created');
     state.editingJob = null;
     closeSheet();
     loadBootstrap();
-  } finally { $('jobSave').disabled = false; }
+  } finally { $('jobSave').disabled = false; $('jobSave').textContent = label; }
 }
 
 /** Admin: delete a wrong job entry. Photos already in Google Drive are never deleted. */
@@ -1096,7 +1117,9 @@ async function startCamera() {
   try { await v.play(); } catch {}
   state.track = state.stream.getVideoTracks()[0];
   state.imageCapture = null;
-  if (state.mode === 'photo' && 'ImageCapture' in window) { try { state.imageCapture = new ImageCapture(state.track); } catch {} }
+  if (state.mode === 'photo' && 'ImageCapture' in window) {
+    try { state.imageCapture = new ImageCapture(state.track); state.imageCapture._caps = state.imageCapture.getPhotoCapabilities().catch(() => null); } catch {}
+  }
   const caps = state.track.getCapabilities?.() || {};
   // Pinch-to-zoom: the camera's own zoom when the phone offers it, otherwise digital zoom
   state.zoomHw = caps.zoom && caps.zoom.max > caps.zoom.min ? caps.zoom : null;
@@ -1289,7 +1312,7 @@ function layoutPreview() {
   const s = Math.min(W / vw, H / vh);                  // object-fit: contain
   previewRect = { w: vw * s, h: vh * s, x: (W - vw * s) / 2, y: (H - vh * s) / 2 };
   clipZoomedVideo();
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);       // sharper adds nothing on screen, only work for the phone
   Object.assign(c.style, { left: previewRect.x + 'px', top: previewRect.y + 'px', width: previewRect.w + 'px', height: previewRect.h + 'px' });
   c.width = Math.round(previewRect.w * dpr); c.height = Math.round(previewRect.h * dpr);
   drawPreview();
@@ -1327,7 +1350,10 @@ async function grabFrame() {
       // Ask the camera for a still photo of the size we will keep — not 50 MP that would only be shrunk (much faster)
       let opts;
       try {
-        const pc = await state.imageCapture.getPhotoCapabilities();
+        // asked once per camera (it is slow on many Android phones), not on every shutter press
+        const ic = state.imageCapture;
+        if (!ic._caps) ic._caps = ic.getPhotoCapabilities().catch(() => null);
+        const pc = await ic._caps;
         if (pc?.imageWidth?.max) {
           const want = photoConf().max_dim || 4680;           // "Device best": the most the app can process (~16.4 MP)
           const r = pc.imageWidth.max / pc.imageHeight.max;
@@ -1382,6 +1408,7 @@ async function onShutter() {
   if (miss) { toast('Choose the ' + miss + ' first'); openSheet('detailsSheet'); return; }
   state.busy = true; $('shutter').classList.add('busy');
   try {
+    await state.encoding?.catch(() => {});                // one full-size photo in memory at a time
     const f = $('flash'); f.classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on')));
     navigator.vibrate?.(30);
     try { await document.fonts?.load(`600 20px ${STAMP_FONT}`); } catch {}
@@ -1411,17 +1438,23 @@ async function onShutter() {
     ctx.drawImage(bmp, 0, 0, w, h);
     bmp.close?.();
     meta.stamp_lines = drawStamp(ctx, w, h, stamp);
-    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', pc.quality));
-    c.width = c.height = 0;
-    if (!blob) throw new Error('Could not create photo');
     meta.width = w; meta.height = h;
+    // The full-size JPEG takes a second or two to make: it is made in the background while the
+    // photo is already shown for review (or the shutter is already free again)
+    const blobP = new Promise((res) => c.toBlob(res, 'image/jpeg', pc.quality)).then((b) => { c.width = c.height = 0; return b; });
+    state.encoding = blobP;
     if (pc.review) {
-      state.pending = { blob, meta, url: URL.createObjectURL(blob) };
+      const k = Math.min(1, 1600 / Math.max(w, h)), sm = document.createElement('canvas');
+      sm.width = Math.round(w * k); sm.height = Math.round(h * k);
+      sm.getContext('2d').drawImage(c, 0, 0, sm.width, sm.height);
+      const small = await new Promise((res) => sm.toBlob(res, 'image/jpeg', 0.85));
+      state.pending = { blobP, meta, url: URL.createObjectURL(small || await blobP) };
       $('reviewImg').src = state.pending.url;
       $('review').hidden = false;
       pushNav();
     } else {
-      await savePhoto(blob, meta);
+      blobP.then((b) => { if (!b) throw new Error('Could not create photo'); return savePhoto(b, meta); })
+        .catch((e) => toast(e.message || 'Could not save the photo', true));
     }
   } catch (e) {
     toast(e.message || 'Capture failed', true);
@@ -1575,17 +1608,17 @@ async function saveToPhone(blob, name) {
   return true;
 }
 async function savePhoto(blob, meta, opts = {}) {
-  // Admin switched on "Save Field photos on phones too" for this job (New / Edit job); not for photos uploaded from the phone
-  if (!opts.noLocal && meta.type === 'Field' && state.job?.save_local) {
-    try { await saveToPhone(blob, localName(meta)); } catch (e) { toast('Could not save on the phone', true); }
-  }
   const buf = await blob.arrayBuffer();
   const total = Math.max(1, Math.ceil(buf.byteLength / CHUNK));
   for (let i = 0; i < total; i++) await chunkPut(meta.uid, i, await seal(buf.slice(i * CHUNK, (i + 1) * CHUNK)));
   await qPut({ uid: meta.uid, kind: 'photo', ext: 'jpg', meta, total, sent: 0, complete: true, created: Date.now(), size: buf.byteLength, status: 'pending', error: '' });
   refreshBadge();
   if (!opts.quiet) toast(navigator.onLine ? 'Saved — uploading…' : 'Saved — will upload when online');
-  syncQueue();
+  syncQueue();                                         // upload starts first; the phone copy below runs alongside
+  // Admin switched on "Save Field photos on phones too" for this job (New / Edit job); not for photos uploaded from the phone
+  if (!opts.noLocal && meta.type === 'Field' && state.jobs.find((j) => j.id === meta.job_id)?.save_local) {
+    try { await saveToPhone(blob, localName(meta)); } catch (e) { toast('Could not save on the phone', true); }
+  }
 }
 
 /* ======================= video ======================= */
@@ -1750,26 +1783,32 @@ async function uploadRecord(rec) {
   }
   return 'done';
 }
-async function syncQueue() {
-  if (state.syncing || !state.auth || !navigator.onLine) return;
-  state.syncing = true; renderNet();
+// Two photos/videos upload at the same time (faster on good networks). A worker looks at the queue again
+// before every file, and a new photo starts a second worker at once — it never waits for the others to finish.
+const sync = { workers: 0, tried: new Set(), stop: false };
+function syncQueue() {
+  if (!state.auth || !navigator.onLine) return;
+  if (!sync.workers) { sync.tried.clear(); sync.stop = false; }   // new round: files that failed are tried again
+  while (sync.workers < 2) syncWorker();
+}
+async function syncWorker() {
+  sync.workers++; state.syncing = true; renderNet();
   try {
-    const items = (await qAll()).filter((r) => r.complete).sort((a, b) => a.created - b.created);
-    // two photos/videos upload at the same time (faster on good networks)
-    let next = 0, stop = false;
-    const worker = async () => {
-      while (!stop && next < items.length) {
-        const res = await uploadRecord(items[next++]);
-        refreshBadge();
-        if (res === 'auth' || res === 'offline') stop = true;
-      }
-    };
-    await Promise.all([worker(), worker()]);
+    while (!sync.stop) {
+      const rec = (await qAll()).filter((r) => r.complete && !sync.tried.has(r.uid)).sort((a, b) => a.created - b.created)[0];
+      if (!rec) break;
+      sync.tried.add(rec.uid);
+      const res = await uploadRecord(rec);
+      refreshBadge();
+      if (res === 'auth' || res === 'offline') sync.stop = true;
+    }
   } catch (e) { console.warn('sync', e); }
   finally {
-    state.syncing = false;
-    renderNet(); refreshBadge();
-    if (openSheetId === 'queueSheet') renderQueue();
+    if (!--sync.workers) {
+      state.syncing = false;
+      renderNet(); refreshBadge();
+      if (openSheetId === 'queueSheet') renderQueue();
+    }
   }
 }
 async function refreshBadge() {
@@ -1892,9 +1931,10 @@ function drawSamples() {
     const grd = ctx.createLinearGradient(0, 0, cv.width, cv.height);
     grd.addColorStop(0, '#6b8f5a'); grd.addColorStop(1, '#b8a47a');
     ctx.fillStyle = grd; ctx.fillRect(0, 0, cv.width, cv.height);
-    const lines = g === 'lab'
-      ? ['Sub-Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', '27 September, 2026 | 02:30 PM']
-      : ['27 September, 2026 | 02:30 PM', fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Project: Rajkot Ring Road Bridge', 'Test: Plate Load Test'];
+    const when = dateLine(conf, new Date(2026, 8, 27, 14, 30));
+    const lines = (g === 'lab'
+      ? ['Sub-Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', when]
+      : [when, fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Project: Rajkot Ring Road Bridge', 'Test: Plate Load Test']).filter(Boolean);
     const logoOn = g === 'field' && conf.logo !== false && !!state.logo;
     drawStamp(ctx, cv.width, cv.height, { lines, style: stampStyle(conf), logo: logoOn, corner: conf.logo_corner || 'top-left', logoSize: conf.logo_size, logoOpacity: conf.logo_opacity });
   });
@@ -1902,8 +1942,8 @@ function drawSamples() {
 function renderAdmin() {
   const s = state.settings;
   if (!s) { $('adminErr').textContent = `Connect to ${STORE_THE} first.`; return; }
-  $('aLab').innerHTML = toggleRows(LAB_ITEMS, s.lab, 'lab.') + styleRows('lab', s.lab);
-  $('aField').innerHTML = toggleRows(FIELD_ITEMS, s.field, 'field.')
+  $('aLab').innerHTML = toggleRows(LAB_ITEMS, withDateTime({ ...s.lab }), 'lab.') + styleRows('lab', s.lab);
+  $('aField').innerHTML = toggleRows(FIELD_ITEMS, withDateTime({ ...s.field }), 'field.')
     + selectRow('Coordinate format', 'field.coord_format', COORD_FORMATS, s.field.coord_format)
     + selectRow('Logo corner', 'field.logo_corner', CORNERS, s.field.logo_corner)
     + `<label class="toggle-row">Logo size<span class="range"><input type="range" min="10" max="60" step="2" data-k="field.logo_size" value="${s.field.logo_size || 26}"><output>${s.field.logo_size || 26}%</output></span></label>`
@@ -1979,6 +2019,8 @@ async function saveAdmin() {
     const [grp, k] = el.dataset.k.split('.');
     s[grp][k] = el.type === 'checkbox' ? el.checked : el.type === 'range' ? +el.value : el.value;
   });
+  s.lab.datetime = s.lab.date || s.lab.time;          // for a server not yet updated to 4.4
+  s.field.datetime = s.field.date || s.field.time;
   s.test_names = adminLists.test_names;
   s.field_test_names = adminLists.field_test_names;
   s.photo = { max_dim: +$('aMax').value, quality: +$('aQuality').value, review: $('aReview').checked, aspect: $('aPhotoAspect').value };
@@ -2117,10 +2159,9 @@ function wire() {
   $('retakeBtn').addEventListener('click', goBack);
   $('keepBtn').addEventListener('click', async () => {
     const p = state.pending; if (!p) return;
-    $('keepBtn').disabled = true;
-    try { await savePhoto(p.blob, p.meta); goBack(); }
-    catch (e) { toast(e.message || 'Could not save', true); }
-    finally { $('keepBtn').disabled = false; }
+    goBack();                                            // back to the camera at once; saving carries on in the background
+    p.blobP.then((b) => { if (!b) throw new Error('Could not create photo'); return savePhoto(b, p.meta); })
+      .catch((e) => toast(e.message || 'Could not save', true));
   });
   $('video').addEventListener('loadedmetadata', layoutPreview);
   $('video').addEventListener('resize', layoutPreview);
