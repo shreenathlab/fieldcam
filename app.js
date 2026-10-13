@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.1';
+const APP_VERSION = '4.4.2';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -1132,9 +1132,11 @@ async function startCamera() {
       })()
     // Photos are taken with the camera's still-photo capture where available, so the live picture can be
     // lighter (faster, smoother); without it (iPhone) the photo comes from the live picture, so ask for the most.
+    // resizeMode 'none' + 4:3 = the camera's own full picture, like the phone's camera app (Chrome otherwise
+    // may cut a narrower piece out of it, so the live picture looked zoomed in compared with the photo).
     : ('ImageCapture' in window
-      ? { ...which, width: { ideal: 1920 }, height: { ideal: 1440 } }
-      : { ...which, width: { ideal: 4032 }, height: { ideal: 3024 } });
+      ? { ...which, width: { ideal: 1920 }, height: { ideal: 1440 }, aspectRatio: { ideal: 4 / 3 }, resizeMode: { ideal: 'none' } }
+      : { ...which, width: { ideal: 4032 }, height: { ideal: 3024 }, aspectRatio: { ideal: 4 / 3 } });
   const wantAudio = state.mode === 'video' && state.settings?.video?.audio !== false;
   try {
     state.stream = await openCamera(video, wantAudio);
@@ -1302,6 +1304,81 @@ function digitalCrop(img) {
   img.close?.();
   return c;
 }
+/* ---------- photo = what the live picture showed ----------
+   The live picture and the still photo come from two different camera outputs. On many Android phones the
+   still shows more (a wider or taller view than the live picture, or the camera's zoom is not applied to
+   it), so the saved photo looked "zoomed out". The app compares the photo with a small copy of the live
+   picture taken at the same moment and cuts the photo to the matching part. Brightness differences
+   don't matter (normalised comparison); if nothing matches clearly, the photo is left as it is. */
+const THUMB_W = 96;
+function previewThumb() {
+  const v = $('video');
+  if (!v.videoWidth || !v.videoHeight) return null;
+  const w = THUMB_W, h = Math.max(8, Math.round(THUMB_W * v.videoHeight / v.videoWidth));
+  try {
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(v, 0, 0, w, h);
+    return { w, h, vw: v.videoWidth, vh: v.videoHeight, g: grayNorm(ctx.getImageData(0, 0, w, h).data) };
+  } catch { return null; }
+}
+/** Grey values with mean 0 and length 1 (so light and dark versions of the same view compare equal). */
+function grayNorm(d) {
+  const n = d.length / 4, g = new Float32Array(n);
+  let m = 0;
+  for (let i = 0; i < n; i++) { g[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114; m += g[i]; }
+  m /= n; let s = 0;
+  for (let i = 0; i < n; i++) { g[i] -= m; s += g[i] * g[i]; }
+  s = Math.sqrt(s) || 1;
+  for (let i = 0; i < n; i++) g[i] /= s;
+  return g;
+}
+function restoreHwZoom() {
+  if (!state.zoomHw || !state.track?.getSettings) return;
+  const now = state.track.getSettings().zoom;
+  if (now !== undefined && Math.abs(now - state.zoom) > 0.01) sendHwZoom(state.zoom);
+}
+function matchPreview(img, ref) {
+  if (!ref || !img.width || !img.height) return img;
+  const W = img.width, H = img.height;
+  if ((W >= H) !== (ref.vw >= ref.vh)) return img;            // turned photo: handled by the sideways code
+  try {
+    // small working copy of the photo (one big draw only)
+    const k = Math.min(1, 640 / Math.max(W, H));
+    const sm = document.createElement('canvas'); sm.width = Math.round(W * k); sm.height = Math.round(H * k);
+    sm.getContext('2d').drawImage(img, 0, 0, sm.width, sm.height);
+    const t = document.createElement('canvas'); t.width = ref.w; t.height = ref.h;
+    const tc = t.getContext('2d', { willReadFrequently: true });
+    const score = (r) => {                                     // r = area of the photo (0..1 of width/height)
+      tc.drawImage(sm, r.x * sm.width, r.y * sm.height, r.w * sm.width, r.h * sm.height, 0, 0, ref.w, ref.h);
+      const g = grayNorm(tc.getImageData(0, 0, ref.w, ref.h).data);
+      let s = 0; for (let i = 0; i < g.length; i++) s += g[i] * ref.g[i];
+      return s;
+    };
+    // the live picture's shape, centred in the photo
+    const rv = ref.vw / ref.vh, rp = W / H;
+    const bw = rv < rp ? rv / rp : 1, bh = rv < rp ? 1 : rp / rv;
+    const area = (z, full) => { const w = (full ? 1 : bw) / z, h = (full ? 1 : bh) / z; return { x: (1 - w) / 2, y: (1 - h) / 2, w, h }; };
+    const asIs = score(area(1, true));
+    let best = { z: 1, s: score(area(1, false)) };
+    const zMax = Math.min(6, Math.max(1.6, (state.zoomHw ? state.zoom : 1) * 1.4));
+    for (let z = 1.06; z <= zMax; z *= 1.06) { const s = score(area(z, false)); if (s > best.s) best = { z, s }; }
+    for (const z of [best.z / 1.03, best.z * 1.03]) {         // fine step around the best one
+      if (z < 1 || z > zMax) continue;
+      const s = score(area(z, false)); if (s > best.s) best = { z, s };
+    }
+    sm.width = sm.height = t.width = t.height = 0;
+    // only cut when it clearly matches better than the photo as it is
+    if (best.s < 0.5 || best.s < asIs + 0.02) return img;
+    const a = area(best.z, false);
+    const cw = Math.round(a.w * W), ch = Math.round(a.h * H);
+    if (cw >= W - 2 && ch >= H - 2) return img;
+    const c = document.createElement('canvas'); c.width = cw; c.height = ch;
+    const ctx = c.getContext('2d'); ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, a.x * W, a.y * H, a.w * W, a.h * H, 0, 0, cw, ch);
+    img.close?.();
+    return c;
+  } catch (e) { console.warn('matchPreview', e); return img; }
+}
 /* Two fingers on the camera screen = zoom the camera */
 const pinch = { pts: new Map(), startDist: 0, startZoom: 1 };
 function pinchDist() { const [a, b] = [...pinch.pts.values()]; return Math.hypot(a.x - b.x, a.y - b.y) || 1; }
@@ -1455,8 +1532,11 @@ async function onShutter() {
     try { await document.fonts?.load(`600 20px ${STAMP_FONT}`); } catch {}
     const when = new Date(), gps = freshGps();
     const turn = sideCapture() ? sideDir : 0;                 // phone held sideways, screen upright
+    const ref = previewThumb();                             // what the live picture shows right now
     const raw = await grabFrame();
-    let bmp = digitalCrop(await toBitmap(raw));          // pinch zoom (digital): keep the zoomed middle part
+    restoreHwZoom();                                        // some phones drop the zoom when taking the photo
+    // The photo = exactly what the live picture showed (same shape, same zoom)
+    let bmp = digitalCrop(matchPreview(await toBitmap(raw), ref));   // + pinch zoom (digital): keep the zoomed middle part
     if (turn && bmp.height > bmp.width) {
       // Camera-app style: turn the upright picture into the landscape photo the user is holding
       const rotated = rotateSideways(bmp, turn); bmp.close?.(); bmp = rotated;
