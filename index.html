@@ -239,11 +239,9 @@
     <label id="fTestOtherRow" hidden>Type the test name
       <input id="fTest" autocomplete="off" placeholder="Test not in the list">
     </label>
-    <div data-for="Field">
-      <label>Your text on the photo
-        <textarea id="fText" rows="2" placeholder="e.g. Pier P4 – concrete pouring"></textarea>
-      </label>
-    </div>
+    <label id="fTextRow">Your text on the photo
+      <textarea id="fText" rows="2" placeholder="e.g. Pier P4 – concrete pouring"></textarea>
+    </label>
     <p id="detailsErr" class="err" role="alert"></p>
     <button type="submit" class="btn primary wide">Done</button>
   </form>
@@ -264,8 +262,8 @@
       <select id="upTestSel"></select>
     </label>
     <label id="upTestOtherRow" hidden>Type the test name<input id="upTest" autocomplete="off" placeholder="Test not in the list"></label>
+    <label id="upTextRow">Your text on the photo<textarea id="upText" rows="2" placeholder="e.g. Pier P4 – concrete pouring"></textarea></label>
     <div id="upFieldOnly">
-      <label>Your text on the photo<textarea id="upText" rows="2" placeholder="e.g. Pier P4 – concrete pouring"></textarea></label>
       <div id="upCoordBox">
         <p class="set-label">Coordinates <b class="req">*</b></p>
         <div class="seg" id="upCoordMode" role="radiogroup" aria-label="Coordinates entered as">

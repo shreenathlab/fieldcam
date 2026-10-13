@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.2';
+const APP_VERSION = '4.4.3';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -26,7 +26,7 @@ const CHUNK = (GAS_URL ? 5 : 1.5) * 1024 * 1024;   // bigger pieces = fewer roun
 const MAX_VIDEO_SEC = 30 * 60;
 const $ = (id) => document.getElementById(id);
 
-const LAB_ITEMS = [['job_number', 'Sub-Job No.'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['date', 'Date'], ['time', 'Time']];
+const LAB_ITEMS = [['job_number', 'Sub-Job No.'], ['site_name', 'Project name'], ['test_name', 'Test name'], ['date', 'Date'], ['time', 'Time'], ['custom_text', 'Your text']];
 const FIELD_ITEMS = [['logo', 'Company logo'], ['date', 'Date'], ['time', 'Time'], ['coords', 'Coordinates'], ['location_name', 'Site location'], ['site_name', 'Project name'], ['test_name', 'Field test name'], ['custom_text', 'Your text']];
 const COORD_FORMATS = [['decimal', 'Decimal degrees'], ['dms', 'Deg° Min′ Sec″'], ['ddm', 'Deg° Decimal-min′'], ['utm', 'UTM']];
 const TEXT_SIZES = [['small', 'Small'], ['large', 'Large'], ['xlarge', 'Extra large']];
@@ -41,7 +41,7 @@ const state = {
   jobs: [],
   settings: null,             // company settings from the NAS
   server: {},                 // storage status
-  jobDetails: {},             // per job: {test_name (lab), field_test, custom_text}
+  jobDetails: {},             // per job: {test_name, lab_text (Laboratory), field_test, custom_text (Field)}
   job: null, type: 'Field', mode: 'photo',
   gps: null, gpsWatch: null,
   stream: null, track: null, imageCapture: null, facing: 'environment', torch: false, streamMode: null,
@@ -276,7 +276,9 @@ function photoConf() {
 }
 function stampConf(type) {
   const s = state.settings || {};
-  return withDateTime({ ...(type === 'Laboratory' ? s.lab : s.field) });
+  const c = withDateTime({ ...(type === 'Laboratory' ? s.lab : s.field) });
+  if (c.custom_text === undefined) c.custom_text = true;   // Laboratory text is new in 4.4.3: on unless an admin switches it off
+  return c;
 }
 /** Settings saved before 4.4 had one "datetime" switch: it stands for both Date and Time. */
 function withDateTime(c) {
@@ -287,7 +289,7 @@ function withDateTime(c) {
 }
 function currentDetails() {
   const id = state.job?.id;
-  if (!state.jobDetails[id]) state.jobDetails[id] = { test_name: '', field_test: '', custom_text: '' };
+  if (!state.jobDetails[id]) state.jobDetails[id] = { test_name: '', lab_text: '', field_test: '', custom_text: '' };
   if (state.jobDetails[id].field_test === undefined) state.jobDetails[id].field_test = '';
   return state.jobDetails[id];
 }
@@ -306,6 +308,7 @@ function buildStamp(type, when, gps, ov) {
     if (c.site_name) lines.push(`Project: ${job.site_name}`);
     if (c.test_name && d.test_name) lines.push(`Test: ${d.test_name}`);
     if (dateLine(c, when)) lines.push(dateLine(c, when));
+    if (c.custom_text && d.lab_text) lines.push(d.lab_text);
     return { lines, logo: false, coordText, style: stampStyle(c) };
   }
   if (dateLine(c, when)) lines.push(dateLine(c, when));
@@ -942,8 +945,9 @@ function updateCtx() {
   // The clearly visible "✎ … Change" button under the top bar shows the test (and field text)
   const test = lab ? d.test_name : d.field_test;
   $('editTest').textContent = test ? 'Test: ' + test : (lab ? 'Choose the test' : 'Choose the field test');
-  $('editText').hidden = lab;
-  $('editText').textContent = d.custom_text ? 'Text: ' + d.custom_text : 'Add your text on the photo';
+  const txt = lab ? d.lab_text : d.custom_text;
+  $('editText').hidden = !stampConf(state.type).custom_text;
+  $('editText').textContent = txt ? 'Text: ' + txt : 'Add your text on the photo';
   $('editBtn').classList.toggle('missing', !!detailsMissing());
   $('stampBtn').hidden = state.auth?.role !== 'admin';
 }
@@ -961,7 +965,8 @@ function renderDetails() {
     + `<option value="__other" ${other ? 'selected' : ''}>Other (type it)</option>`;
   $('fTest').value = other ? cur : '';
   $('fTestOtherRow').hidden = !other;
-  $('fText').value = d.custom_text;
+  $('fTextRow').hidden = !stampConf(state.type).custom_text;
+  $('fText').value = (lab ? d.lab_text : d.custom_text) || '';
   $('detailsErr').textContent = '';
 }
 function chosenTest() {
@@ -974,6 +979,7 @@ function saveDetails(e) {
   if (state.type === 'Laboratory') {
     d.test_name = chosenTest();
     if (stampConf('Laboratory').test_name && !d.test_name) { $('detailsErr').textContent = 'Please choose or type the test name'; return; }
+    d.lab_text = $('fText').value.trim();
   } else {
     d.field_test = chosenTest();
     if (stampConf('Field').test_name && !d.field_test) { $('detailsErr').textContent = 'Please choose or type the field test name'; return; }
@@ -1508,7 +1514,7 @@ function baseMeta(kind, when, gps, stamp) {
     captured_at: when.toISOString(),
     test_name: state.type === 'Laboratory' ? d.test_name : d.field_test,
     location_name: state.type === 'Field' ? locationName() : '',
-    custom_text: state.type === 'Field' ? d.custom_text : '',
+    custom_text: (state.type === 'Field' ? d.custom_text : d.lab_text) || '',
     gps: gps ? { lat: gps.lat, lon: gps.lon, accuracy: gps.accuracy, altitude: gps.altitude } : null,
     coord_text: stamp.coordText,
     stamp_lines: stamp.lines,
@@ -1601,7 +1607,7 @@ function onUploadFiles(e) {
   upload.files = files;
   upload.type = state.type || 'Field';
   $('upWhen').value = toLocalInput(new Date(files[0].lastModified || Date.now()));   // when the photo was taken (best guess)
-  $('upTest').value = ''; $('upText').value = currentDetails().custom_text || '';
+  $('upTest').value = '';
   ['upLat', 'upLon', 'upZone', 'upBand', 'upE', 'upN'].forEach((id) => { $(id).value = ''; });
   openSheet('uploadSheet');
 }
@@ -1619,6 +1625,7 @@ function renderUploadForm(rebuildList) {
   $('upTestReq').hidden = !conf.test_name;
   if (rebuildList) {
     const d = currentDetails(), cur = lab ? d.test_name : d.field_test;
+    $('upText').value = (lab ? d.lab_text : d.custom_text) || '';   // each type keeps its own text
     const names = (lab ? state.settings?.test_names : state.settings?.field_test_names) || [];
     $('upTestSel').innerHTML = `<option value="">— Select ${lab ? 'test' : 'field test'} —</option>`
       + names.map((n) => `<option value="${esc(n)}" ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')
@@ -1626,6 +1633,7 @@ function renderUploadForm(rebuildList) {
   }
   $('upTestOtherRow').hidden = $('upTestSel').value !== '__other';
   $('upFieldOnly').hidden = lab;
+  $('upTextRow').hidden = !conf.custom_text;
   $('upCoordBox').hidden = lab || !conf.coords;
   $('upCoordMode').querySelectorAll('[data-mode]').forEach((b) => b.setAttribute('aria-checked', b.dataset.mode === upload.coordMode));
   $('upLatLon').hidden = upload.coordMode !== 'latlon';
@@ -1666,7 +1674,8 @@ async function submitUpload(e) {
   }
   const when = $('upWhen').value ? new Date($('upWhen').value) : new Date();
   if (isNaN(when)) { $('upErr').textContent = 'Please enter the date and time'; return; }
-  const details = lab ? { test_name: test } : { field_test: test, custom_text: $('upText').value.trim() };
+  const text = conf.custom_text ? $('upText').value.trim() : '';
+  const details = lab ? { test_name: test, lab_text: text } : { field_test: test, custom_text: text };
   const btn = $('upGo'); btn.disabled = true;
   let done = 0;
   try {
@@ -1685,7 +1694,7 @@ async function submitUpload(e) {
       const meta = baseMeta('photo', when, coords.gps || null, stamp);
       Object.assign(meta, {
         type: upload.type, test_name: test, source: 'upload',
-        custom_text: lab ? '' : details.custom_text, location_name: lab ? '' : locationName(),
+        custom_text: text, location_name: lab ? '' : locationName(),
         stamp_lines: drawStamp(ctx, w, h, stamp), width: w, height: h,
       });
       const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', pc.quality));
@@ -1695,7 +1704,7 @@ async function submitUpload(e) {
       done++;
     }
     // remember the choice for the next photos of this job
-    const d = currentDetails(); if (lab) d.test_name = test; else { d.field_test = test; d.custom_text = details.custom_text; }
+    const d = currentDetails(); if (lab) { d.test_name = test; d.lab_text = text; } else { d.field_test = test; d.custom_text = text; }
     kvSet('jobDetails', state.jobDetails);
     closeSheet();
     toast(`${done} photo${done === 1 ? '' : 's'} stamped — uploading…`);
@@ -2054,7 +2063,7 @@ function drawSamples() {
     ctx.fillStyle = grd; ctx.fillRect(0, 0, cv.width, cv.height);
     const when = dateLine(conf, new Date(2026, 8, 27, 14, 30));
     const lines = (g === 'lab'
-      ? ['Sub-Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', when]
+      ? ['Sub-Job No: JN-2026/045', 'Project: Rajkot Ring Road Bridge', 'Test: Cube Compressive Strength', when, conf.custom_text !== false ? 'Cube set A – 7 days' : '']
       : [when, fmtCoords(22.3039, 70.8022, conf.coord_format || 'utm'), 'Madhapar, Rajkot, Gujarat', 'Project: Rajkot Ring Road Bridge', 'Test: Plate Load Test']).filter(Boolean);
     const logoOn = g === 'field' && conf.logo !== false && !!state.logo;
     drawStamp(ctx, cv.width, cv.height, { lines, style: stampStyle(conf), logo: logoOn, corner: conf.logo_corner || 'top-left', logoSize: conf.logo_size, logoOpacity: conf.logo_opacity });
@@ -2063,7 +2072,7 @@ function drawSamples() {
 function renderAdmin() {
   const s = state.settings;
   if (!s) { $('adminErr').textContent = `Connect to ${STORE_THE} first.`; return; }
-  $('aLab').innerHTML = toggleRows(LAB_ITEMS, withDateTime({ ...s.lab }), 'lab.') + styleRows('lab', s.lab);
+  $('aLab').innerHTML = toggleRows(LAB_ITEMS, stampConf('Laboratory'), 'lab.') + styleRows('lab', s.lab);
   $('aField').innerHTML = toggleRows(FIELD_ITEMS, withDateTime({ ...s.field }), 'field.')
     + selectRow('Coordinate format', 'field.coord_format', COORD_FORMATS, s.field.coord_format)
     + selectRow('Logo corner', 'field.logo_corner', CORNERS, s.field.logo_corner)
