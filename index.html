@@ -342,6 +342,11 @@
 <section id="adminSheet" class="sheet tall" hidden>
   <div class="sheet-head"><h2>Admin Settings</h2><button class="x" data-close>✕</button></div>
   <div class="sheet-body">
+    <h3>This phone's permissions</h3>
+    <p class="muted small">What FieldCam is allowed to use on <b>this</b> phone. <b>Allow</b> asks the phone again; if it is blocked, the steps to switch it on are shown. Works at once — nothing to save.</p>
+    <div id="permList"></div>
+    <button type="button" class="btn wide" id="permCheckAll">Check all</button>
+
     <h3>Company logo <span class="muted small">(field photos only)</span></h3>
     <div class="logo-row">
       <div class="logo-box" id="logoBox">No logo</div>

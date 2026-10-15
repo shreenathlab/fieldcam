@@ -434,3 +434,12 @@ img { -webkit-user-drag: none; }
 #gpsPill.gps::before { content: '📍 '; }
 
 #appVer { white-space: pre-line; }
+
+/* Admin settings: this phone's permissions */
+.perm-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
+.perm-row:first-child { border-top: 0; }
+.perm-row .what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.perm-row .st { font-size: 14px; font-weight: 600; color: var(--muted); }
+.perm-row .st.ok { color: var(--ok); } .perm-row .st.warn { color: var(--warn); } .perm-row .st.bad { color: var(--bad); }
+.perm-row .fix { font-size: 13px; color: var(--muted); }
+.perm-row .btn { flex: none; padding: 8px 14px; }

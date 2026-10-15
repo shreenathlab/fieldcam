@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.3';
+const APP_VERSION = '4.4.4';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -1063,6 +1063,103 @@ function showGpsInfo() {
   const tip = g.accuracy > 25 ? ' — under open sky it improves within a minute; also switch on Google Location Accuracy in phone settings' : '';
   toast(`${fmtCoords(g.lat, g.lon, fmt)}  ·  accuracy ±${Math.round(g.accuracy)} m (not printed on the photo)${tip}`, g.accuracy > 25, 6000);
 }
+/* ======================= this phone's permissions (Admin settings) =======================
+   A web page cannot switch phone permissions itself. It can see what is allowed, ask again (the phone
+   shows its own "Allow" box) and, when something is blocked, say exactly where to switch it on. */
+const ANDROID_VER = +(/Android (\d+)/.exec(navigator.userAgent)?.[1] || 0);
+function permList() {
+  return [
+    { id: 'camera', name: 'Camera', why: 'Photos and videos' },
+    { id: 'microphone', name: 'Microphone', why: 'Sound in videos' },
+    { id: 'geolocation', name: 'Location (precise)', why: 'Coordinates on Field photos' },
+    IOS && typeof DeviceMotionEvent?.requestPermission === 'function' && { id: 'motion', name: 'Motion & orientation', why: 'Landscape photos when the screen stays upright' },
+    ANDROID_APP && ANDROID_VER && ANDROID_VER < 10 && { id: 'storage', name: 'Photos / storage', why: 'Only for jobs that keep Field photos on phones' },
+  ].filter(Boolean);
+}
+const permState = {};
+function permWhere(id) {
+  const thing = { camera: 'Camera', microphone: 'Microphone', geolocation: 'Location', storage: 'Photos and videos (Storage)' }[id];
+  if (id === 'motion') return 'iPhone Settings › Apps › Safari › Motion & Orientation Access: ON, then open FieldCam again.';
+  if (ANDROID_APP) {
+    return id === 'geolocation'
+      ? 'Phone Settings › Apps › FieldCam › Permissions › Location › “Allow only while using the app” and switch ON “Use precise location”. Also keep the phone’s Location switched on.'
+      : `Phone Settings › Apps › FieldCam › Permissions › ${thing} › Allow.`;
+  }
+  if (IOS) {
+    return id === 'geolocation'
+      ? 'iPhone Settings › Privacy & Security › Location Services: ON › Safari Websites › “While Using the App” and Precise Location: ON.'
+      : `iPhone Settings › Apps › Safari › ${thing} › Allow.`;
+  }
+  return `In Chrome tap the ⓘ / lock icon left of the web address › Permissions › ${thing} › Allow. If it is still blocked: Phone Settings › Apps › Chrome › Permissions › ${thing} › Allow`
+    + (id === 'geolocation' ? ' (and “Use precise location” ON).' : '.');
+}
+function renderPerms() {
+  const box = $('permList'); if (!box) return;
+  box.innerHTML = permList().map((p) => {
+    const st = permState[p.id] || { cls: '', text: 'Not checked yet' };
+    return `<div class="perm-row" data-p="${p.id}">
+      <div class="what"><b>${esc(p.name)}</b><span class="muted small">${esc(p.why)}</span>
+        <span class="st ${st.cls}">${esc(st.text)}</span>${st.fix ? `<span class="fix">${esc(st.fix)}</span>` : ''}</div>
+      ${st.cls === 'ok' ? '' : `<button type="button" class="btn" data-ask="${p.id}">${st.busy ? '…' : 'Allow'}</button>`}
+    </div>`;
+  }).join('');
+}
+function setPerm(id, cls, text, fix) { permState[id] = { cls, text, fix: fix || '' }; renderPerms(); }
+/** Without asking: what the browser already knows (Allowed / Blocked / not asked yet). */
+async function quietPermCheck() {
+  for (const p of permList()) {
+    if (p.id === 'geolocation' && freshGps()) { gpsPermState(freshGps()); continue; }
+    if (p.id === 'camera' && state.stream?.getVideoTracks().some((t) => t.readyState === 'live')) { setPerm('camera', 'ok', '✓ Allowed'); continue; }
+    try {
+      const r = await navigator.permissions?.query?.({ name: p.id });
+      if (!r) continue;
+      if (r.state === 'granted') setPerm(p.id, 'ok', '✓ Allowed');
+      else if (r.state === 'denied') setPerm(p.id, 'bad', '✗ Blocked', permWhere(p.id));
+      else setPerm(p.id, '', 'Not asked yet — tap Allow');
+    } catch { /* this phone can't tell without asking */ }
+  }
+}
+function gpsPermState(g) {
+  if (g.accuracy > 200) setPerm('geolocation', 'warn', `⚠ Allowed, but only approximate (±${Math.round(g.accuracy)} m)`, permWhere('geolocation'));
+  else setPerm('geolocation', 'ok', `✓ Allowed — precise (±${Math.round(g.accuracy)} m)`);
+}
+async function askPerm(id) {
+  permState[id] = { cls: '', text: 'Checking…', busy: true }; renderPerms();
+  const blocked = (e) => (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || e.code === 1));
+  try {
+    if (id === 'camera' || id === 'microphone') {
+      if (id === 'camera' && state.stream?.getVideoTracks().some((t) => t.readyState === 'live')) return setPerm(id, 'ok', '✓ Allowed');
+      const s = await navigator.mediaDevices.getUserMedia(id === 'camera' ? { video: true } : { audio: true });
+      s.getTracks().forEach((t) => t.stop());
+      return setPerm(id, 'ok', '✓ Allowed');
+    }
+    if (id === 'geolocation') {
+      const g = freshGps();
+      if (g && Date.now() - g.at < 15000) return gpsPermState(g);   // readings are arriving: allowed already
+      const p = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }));
+      onGpsFix(p); stopGps(); startGps();                   // use it at once and keep reading
+      return gpsPermState({ accuracy: p.coords.accuracy });
+    }
+    if (id === 'motion') {
+      const r = await DeviceMotionEvent.requestPermission();
+      return r === 'granted' ? setPerm(id, 'ok', '✓ Allowed') : setPerm(id, 'bad', '✗ Blocked', permWhere(id));
+    }
+    if (id === 'storage') {
+      ANDROID_APP.askStoragePermission();
+      return setPerm(id, '', 'Asked — choose Allow in the box the phone shows', permWhere(id));
+    }
+  } catch (e) {
+    if (blocked(e)) return setPerm(id, 'bad', '✗ Blocked', permWhere(id));
+    if (id === 'camera' && e?.name === 'NotReadableError') return setPerm(id, 'warn', '⚠ Allowed, but another app is using the camera — close it');
+    if (id === 'geolocation') return setPerm(id, 'warn', '⚠ No position — the phone’s Location (GPS) may be off', 'Swipe down from the top of the screen and switch Location ON, then tap Allow again.');
+    return setPerm(id, 'warn', '⚠ Could not check: ' + (e?.message || e?.name || 'unknown'));
+  }
+}
+async function askAllPerms() {
+  $('permCheckAll').disabled = true;
+  try { for (const p of permList()) await askPerm(p.id); } finally { $('permCheckAll').disabled = false; }
+}
+
 /* ======================= orientation (photos landscape only) ======================= */
 let heldSideways = null;          // from the motion sensor; null = unknown
 /* Which way the phone is turned: +1 = turned left (top of the phone points left), -1 = turned right,
@@ -2095,6 +2192,7 @@ function renderAdmin() {
   $('aVideoRes').value = String(vr === 720 ? 854 : vr);
   $('aAudio').checked = s.video?.audio !== false;
   $('adminErr').textContent = '';
+  renderPerms(); quietPermCheck();
   renderLogoBox();
   requestAnimationFrame(drawSamples);
 }
@@ -2286,6 +2384,8 @@ function wire() {
     } catch { toast('Torch not supported'); }
   });
   $('retryCam').addEventListener('click', startCamera);
+  $('permList').addEventListener('click', (e) => { const b = e.target.closest('[data-ask]'); if (b) askPerm(b.dataset.ask); });
+  $('permCheckAll').addEventListener('click', askAllPerms);
   $('retakeBtn').addEventListener('click', goBack);
   $('keepBtn').addEventListener('click', async () => {
     const p = state.pending; if (!p) return;
