@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.4';
+const APP_VERSION = '4.4.6';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -583,12 +583,26 @@ function enterApp() {
   refreshBadge();
   loadBootstrap();
   syncQueue();
+  // "Reload page" from the permissions list: come back to it
+  try {
+    if (sessionStorage.getItem('fc-reopen-admin')) {
+      sessionStorage.removeItem('fc-reopen-admin');
+      if (state.auth?.role === 'admin') { openSheet('adminSheet'); setTimeout(askAllPerms, 300); }
+    }
+  } catch {}
 }
 async function loadBootstrap() {
-  const r = await api('bootstrap.php', { timeout: 15000 });
+  const r = await api('bootstrap.php', { timeout: 30000 });   // slow internet: wait longer (the saved list is shown meanwhile)
   if (!r.ok) {
     $('jobsNote').textContent = r.status === 0 ? 'Offline — showing the last saved job list.' : (r.error || '');
     return r;
+  }
+  // A job submitted on this phone without internet stays submitted here until the server has it
+  const waitingOps = ((await kvGet('pendingOps').catch(() => null)) || []).filter((o) => o.action === 'submit');
+  if (waitingOps.length) {
+    const ids = new Set(waitingOps.map((o) => o.id));
+    r.jobs = r.jobs.map((j) => (ids.has(j.id) && j.status !== 'submitted' ? { ...j, status: 'submitted', submitted_at: new Date().toISOString(), pending: true } : j));
+    if (r.role !== 'admin') r.jobs = r.jobs.filter((j) => !ids.has(j.id));
   }
   state.jobs = r.jobs; state.settings = r.settings;
   state.auth.role = r.role; state.auth.name = r.name; state.auth.shared = !!r.shared;
@@ -809,7 +823,6 @@ async function onJobListClick(e) {
 }
 async function submitJob() {
   const job = state.job; if (!job) return;
-  if (!navigator.onLine) { toast('Connect to the internet to submit the job', true); return; }
   const waiting = (await qAll()).filter((r) => r.meta?.job_id === job.id).length;
   const ok = await askConfirm({
     title: `Submit job ${job.job_number}?`,
@@ -823,11 +836,18 @@ async function submitJob() {
   if (!ok) return;
   $('submitJobBtn').disabled = true;
   try {
-    const r = await api('job.php', { json: { action: 'submit', id: job.id, photographer_name: state.photographer || '' } });
-    if (!r.ok) { toast(r.error || 'Could not submit the job', true); return; }
-    toast(`Job ${job.job_number} submitted`);
+    const op = { action: 'submit', id: job.id, photographer_name: state.photographer || '' };
+    const r = navigator.onLine ? await api('job.php', { json: op, timeout: 20000 }) : { status: 0 };
+    let done = r.job;
+    if (r.status === 0) {
+      // No / too slow internet: the submission waits on this phone and is sent automatically later
+      await addPendingOp(op);
+      done = { ...job, status: 'submitted', submitted_at: new Date().toISOString(), submitted_by: state.auth?.name, pending: true };
+      toast(`Job ${job.job_number} submitted on this phone — it is sent when the internet is back`, false, 5000);
+    } else if (!r.ok) { toast(r.error || 'Could not submit the job', true); return; }
+    else toast(`Job ${job.job_number} submitted`);
     const i = state.jobs.findIndex((j) => j.id === job.id);
-    if (i >= 0) state.jobs[i] = r.job;
+    if (i >= 0) state.jobs[i] = done;
     if (state.auth?.role !== 'admin') state.jobs = state.jobs.filter((j) => j.id !== job.id);
     kvSet('jobs', state.jobs);
     state.job = null;
@@ -835,6 +855,29 @@ async function submitJob() {
     goBack();
     loadBootstrap();
   } finally { $('submitJobBtn').disabled = false; }
+}
+/* Actions done without internet (submit job) wait here and are sent when the connection is back. */
+async function addPendingOp(op) {
+  const ops = (await kvGet('pendingOps')) || [];
+  if (!ops.some((o) => o.action === op.action && o.id === op.id)) ops.push(op);
+  await kvSet('pendingOps', ops);
+}
+let flushingOps = false;
+async function flushPendingOps() {
+  if (flushingOps || !state.auth || !navigator.onLine) return;
+  flushingOps = true;
+  try {
+    const ops = (await kvGet('pendingOps')) || [];
+    if (!ops.length) return;
+    const left = [];
+    for (const op of ops) {
+      const r = await api('job.php', { json: op, timeout: 30000 });
+      if (r.status === 0) { left.push(op); continue; }              // still no internet: keep it
+      if (!r.ok && r.status !== 404) toast(`Job could not be submitted: ${r.error || r.status}`, true);
+    }
+    await kvSet('pendingOps', left);
+    if (left.length < ops.length) loadBootstrap();
+  } finally { flushingOps = false; }
 }
 async function reopenJob(job) {
   const ok = await askConfirm({
@@ -1090,8 +1133,12 @@ function permWhere(id) {
       ? 'iPhone Settings › Privacy & Security › Location Services: ON › Safari Websites › “While Using the App” and Precise Location: ON.'
       : `iPhone Settings › Apps › Safari › ${thing} › Allow.`;
   }
-  return `In Chrome tap the ⓘ / lock icon left of the web address › Permissions › ${thing} › Allow. If it is still blocked: Phone Settings › Apps › Chrome › Permissions › ${thing} › Allow`
-    + (id === 'geolocation' ? ' (and “Use precise location” ON).' : '.');
+  // Chrome never shows the "Allow" box again for a site once it was blocked — the user has to undo it
+  return `Chrome will not ask again by itself. To switch it on:
+1. Tap the small icon just left of the web address (two sliders ⚙ or a lock).
+2. Tap “Reset permissions” (or Permissions › ${thing} › Allow).
+3. Tap “Reload page” below, then “Try again” and choose Allow.
+Still blocked? Phone Settings › Apps › Chrome › Permissions › ${thing} › Allow${id === 'geolocation' ? ' (and “Use precise location” ON)' : ''}.`;
 }
 function renderPerms() {
   const box = $('permList'); if (!box) return;
@@ -1100,9 +1147,12 @@ function renderPerms() {
     return `<div class="perm-row" data-p="${p.id}">
       <div class="what"><b>${esc(p.name)}</b><span class="muted small">${esc(p.why)}</span>
         <span class="st ${st.cls}">${esc(st.text)}</span>${st.fix ? `<span class="fix">${esc(st.fix)}</span>` : ''}</div>
-      ${st.cls === 'ok' ? '' : `<button type="button" class="btn" data-ask="${p.id}">${st.busy ? '…' : 'Allow'}</button>`}
+      ${st.cls === 'ok' ? '' : `<button type="button" class="btn" data-ask="${p.id}">${st.busy ? '…' : st.cls ? 'Try again' : 'Allow'}</button>`}
     </div>`;
-  }).join('');
+  }).join('')
+    // after changing a permission in Chrome's site settings the page must be reloaded
+    + (!ANDROID_APP && Object.values(permState).some((s) => s.cls === 'bad')
+      ? '<button type="button" class="btn wide" id="permReload">Reload page</button>' : '');
 }
 function setPerm(id, cls, text, fix) { permState[id] = { cls, text, fix: fix || '' }; renderPerms(); }
 /** Without asking: what the browser already knows (Allowed / Blocked / not asked yet). */
@@ -1151,7 +1201,13 @@ async function askPerm(id) {
   } catch (e) {
     if (blocked(e)) return setPerm(id, 'bad', '✗ Blocked', permWhere(id));
     if (id === 'camera' && e?.name === 'NotReadableError') return setPerm(id, 'warn', '⚠ Allowed, but another app is using the camera — close it');
-    if (id === 'geolocation') return setPerm(id, 'warn', '⚠ No position — the phone’s Location (GPS) may be off', 'Swipe down from the top of the screen and switch Location ON, then tap Allow again.');
+    if (id === 'geolocation') {
+      // 2 = the phone gave no position (Location off, or the browser app itself not allowed); 3 = no fix in 20 s
+      const app = ANDROID_APP ? 'FieldCam' : IOS ? 'Safari' : 'Chrome';
+      return e?.code === 3
+        ? setPerm(id, 'warn', '⚠ Allowed, but no GPS reading yet', 'Go outdoors / near a window and tap Try again. Check that the phone’s Location is ON (swipe down from the top of the screen).')
+        : setPerm(id, 'warn', '⚠ The phone gives no position', `1. Swipe down from the top of the screen and switch Location ON.\n2. Phone Settings › Apps › ${app} › Permissions › Location › Allow (and “Use precise location” ON).\n3. Tap Try again.`);
+    }
     return setPerm(id, 'warn', '⚠ Could not check: ' + (e?.message || e?.name || 'unknown'));
   }
 }
@@ -1838,7 +1894,7 @@ async function savePhoto(blob, meta, opts = {}) {
   const buf = await blob.arrayBuffer();
   const total = Math.max(1, Math.ceil(buf.byteLength / CHUNK));
   for (let i = 0; i < total; i++) await chunkPut(meta.uid, i, await seal(buf.slice(i * CHUNK, (i + 1) * CHUNK)));
-  await qPut({ uid: meta.uid, kind: 'photo', ext: 'jpg', meta, total, sent: 0, complete: true, created: Date.now(), size: buf.byteLength, status: 'pending', error: '' });
+  await qPut({ uid: meta.uid, kind: 'photo', ext: 'jpg', meta, total, chunk: CHUNK, sent: 0, complete: true, created: Date.now(), size: buf.byteLength, status: 'pending', error: '' });
   refreshBadge();
   if (!opts.quiet) toast(navigator.onLine ? 'Saved — uploading…' : 'Saved — will upload when online');
   syncQueue();                                         // upload starts first; the phone copy below runs alongside
@@ -1926,7 +1982,7 @@ async function startRecording() {
     rec.timers.forEach(clearInterval);
     const dur = (Date.now() - rec.started) / 1000;
     meta.duration_s = Math.round(dur * 10) / 10;
-    await qPut({ uid: meta.uid, kind: 'video', ext, meta, total: rec.idx, sent: 0, complete: rec.idx > 0, created: rec.started, size: rec.size, status: 'pending', error: '' });
+    await qPut({ uid: meta.uid, kind: 'video', ext, meta, total: rec.idx, chunk: CHUNK, sent: 0, complete: rec.idx > 0, created: rec.started, size: rec.size, status: 'pending', error: '' });
     if (!rec.idx) await qRemove(meta.uid);
     state.rec = null;
     $('shutter').classList.remove('recording');
@@ -1982,41 +2038,86 @@ function stopRecording() {
 }
 
 /* ======================= upload queue ======================= */
+/* ---------- uploads that work on weak / slow internet ----------
+   Each file is sent in pieces. The piece size follows the connection: 5 MB on good internet (few requests),
+   1 MB on average and 256 KB on a weak signal — so even at a few KB/s every piece gets through and the
+   upload keeps moving (one 5 MB piece used to need minutes, timed out and started again for ever).
+   A piece that times out makes the next attempt use smaller pieces. The measured speed is remembered. */
+const KB = 1024, PIECES = [5 * KB * KB, KB * KB, 256 * KB];       // all divide the 5 MB stored parts evenly
+const net = { bps: 0 };                                              // measured upload speed (bytes/s), 0 = not known
+try { net.bps = +localStorage.getItem('fc-net-bps') || 0; } catch {}
+function noteSpeed(bytes, ms) {
+  if (ms < 300) return;
+  const b = bytes / (ms / 1000);
+  net.bps = net.bps ? net.bps * 0.6 + b * 0.4 : b;
+  try { localStorage.setItem('fc-net-bps', String(Math.round(net.bps))); } catch {}
+}
+const slowNet = () => (net.bps && net.bps < 60 * KB) || /(^|-)2g$/.test(navigator.connection?.effectiveType || '');
+/** Piece size for a new upload: the biggest one that goes up in about 20 s at the measured speed. */
+function pickPiece() {
+  const et = navigator.connection?.effectiveType || '';
+  if (!net.bps) return /2g$/.test(et) ? PIECES[2] : PIECES[1];   // speed not known yet: 1 MB (256 KB on 2G)
+  return PIECES.find((p) => (p * 1.37) / net.bps <= 20) || PIECES[2];                     // 1.37 = base64 size
+}
 async function uploadRecord(rec) {
-  let conflicts = 0;
-  while (rec.sent < rec.total) {
-    const c = await chunkGet(rec.uid, rec.sent);
-    if (!c) { rec.status = 'error'; rec.error = 'Part of this file is missing on the phone'; await qPut(rec); return 'error'; }
-    const data = await unseal(c);
-    const last = rec.sent === rec.total - 1;
+  // Files saved by FieldCam before 4.4.6 (no rec.chunk): send their stored parts as they are
+  const adaptive = !!rec.chunk && rec.size > 0 && CHUNK % PIECES[2] === 0;
+  if (adaptive && (!rec.piece || rec.sent === 0)) { rec.piece = pickPiece(); rec.pieces = Math.max(1, Math.ceil(rec.size / rec.piece)); }
+  const P = adaptive ? rec.piece : 0, total = adaptive ? rec.pieces : rec.total;
+  let conflicts = 0, open = { i: -1, buf: null };
+  const part = async (i) => {                                       // stored part i, unlocked (kept for the next piece)
+    if (open.i !== i) { const c = await chunkGet(rec.uid, i); open = { i, buf: c ? new Uint8Array(await unseal(c)) : null }; }
+    return open.buf;
+  };
+  while (rec.sent < total) {
+    let data;
+    if (adaptive) {
+      const off = rec.sent * P, buf = await part(Math.floor(off / rec.chunk));
+      data = buf && buf.subarray(off % rec.chunk, off % rec.chunk + P);
+    } else data = await part(rec.sent);
+    if (!data || !data.length) { rec.status = 'error'; rec.error = 'Part of this file is missing on the phone'; await qPut(rec); return 'error'; }
+    const last = rec.sent === total - 1;
     const fd = new FormData();
-    fd.append('uid', rec.uid); fd.append('idx', rec.sent); fd.append('total', rec.total);
+    fd.append('uid', rec.uid); fd.append('idx', rec.sent); fd.append('total', total);
     fd.append('kind', rec.kind); fd.append('ext', rec.ext);
     if (last) fd.append('meta', JSON.stringify(rec.meta));
     fd.append('chunk', new Blob([data]), 'part');
-    const r = await api('upload.php', { body: fd, timeout: 120000 });
+    // time allowed grows with the piece: never less than 1 minute, up to 5 minutes (at least ~8 KB/s)
+    const timeout = Math.min(300000, Math.max(60000, (data.length * 1.37) / (8 * KB) * 1000));
+    const t0 = Date.now();
+    const r = await api('upload.php', { body: fd, timeout });
     if (r.status === 401) return 'auth';
     if (r.ok) {
-      if (r.done) { await qRemove(rec.uid); return 'done'; }   // NAS confirmed — remove from phone
+      noteSpeed(data.length * 1.37, Date.now() - t0);
+      if (r.done) { await qRemove(rec.uid); return 'done'; }   // Google Drive confirmed — remove from phone
       rec.sent = typeof r.next === 'number' ? r.next : rec.sent + 1;
       rec.status = 'uploading'; rec.error = '';
       await qPut(rec); updateQueueRow(rec);
       continue;
     }
     if (r.status === 409 && typeof r.next === 'number' && ++conflicts < 6) { rec.sent = r.next; await qPut(rec); continue; }
-    rec.status = 'error'; rec.error = r.error || 'Upload failed';
+    if (r.status === 0 && navigator.onLine && adaptive && P > PIECES[2]) {
+      // too slow for this piece size: start this file again with smaller pieces (the server restarts it too)
+      net.bps = Math.min(net.bps || Infinity, (P * 1.37) / (timeout / 1000) / 2);
+      rec.sent = 0; rec.piece = 0;
+      rec.status = 'pending'; rec.error = 'Slow internet — trying smaller pieces';
+      await qPut(rec);
+      return 'retry';
+    }
+    rec.status = 'error'; rec.error = r.status === 0 ? (navigator.onLine ? 'Internet too slow or not working — will try again' : 'Offline — will upload when online') : (r.error || 'Upload failed');
     await qPut(rec);
     return r.status === 0 ? 'offline' : 'error';
   }
   return 'done';
-}
-// Two photos/videos upload at the same time (faster on good networks). A worker looks at the queue again
+}// Two photos/videos upload at the same time (faster on good networks). A worker looks at the queue again
 // before every file, and a new photo starts a second worker at once — it never waits for the others to finish.
 const sync = { workers: 0, tried: new Set(), stop: false };
 function syncQueue() {
   if (!state.auth || !navigator.onLine) return;
+  flushPendingOps();
   if (!sync.workers) { sync.tried.clear(); sync.stop = false; }   // new round: files that failed are tried again
-  while (sync.workers < 2) syncWorker();
+  // weak internet: one file at a time, so it gets all of the connection and finishes
+  while (sync.workers < (slowNet() ? 1 : 2)) syncWorker();
 }
 async function syncWorker() {
   sync.workers++; state.syncing = true; renderNet();
@@ -2026,6 +2127,7 @@ async function syncWorker() {
       if (!rec) break;
       sync.tried.add(rec.uid);
       const res = await uploadRecord(rec);
+      if (res === 'retry') sync.tried.delete(rec.uid);              // again at once, with smaller pieces
       refreshBadge();
       if (res === 'auth' || res === 'offline') sync.stop = true;
     }
@@ -2050,7 +2152,7 @@ function revokeThumbs() { thumbUrls.forEach(URL.revokeObjectURL); thumbUrls = []
 function queueStatus(r) {
   if (!r.complete) return 'recording…';
   if (r.status === 'error') return esc(r.error);
-  if (r.status === 'uploading' || r.sent) return `uploading ${Math.round((r.sent / r.total) * 100)}%`;
+  if (r.status === 'uploading' || r.sent) return `uploading ${Math.round((r.sent / (r.pieces || r.total)) * 100)}%`;
   return 'waiting';
 }
 function updateQueueRow(r) {
@@ -2292,6 +2394,7 @@ async function removeLogo() {
 function renderNet() {
   const p = $('netPill');
   if (!navigator.onLine) { p.textContent = 'Offline'; p.className = 'pill warn'; }
+  else if (state.syncing && slowNet()) { p.textContent = `Slow internet · uploading${net.bps ? ' ~' + Math.max(1, Math.round(net.bps / 1024)) + ' KB/s' : ''}`; p.className = 'pill warn'; }
   else if (state.syncing) { p.textContent = 'Uploading…'; p.className = 'pill ok'; }
   else { p.textContent = 'Online'; p.className = 'pill ok'; }
 }
@@ -2384,7 +2487,10 @@ function wire() {
     } catch { toast('Torch not supported'); }
   });
   $('retryCam').addEventListener('click', startCamera);
-  $('permList').addEventListener('click', (e) => { const b = e.target.closest('[data-ask]'); if (b) askPerm(b.dataset.ask); });
+  $('permList').addEventListener('click', (e) => {
+    if (e.target.closest('#permReload')) { sessionStorage.setItem('fc-reopen-admin', '1'); location.reload(); return; }
+    const b = e.target.closest('[data-ask]'); if (b) askPerm(b.dataset.ask);
+  });
   $('permCheckAll').addEventListener('click', askAllPerms);
   $('retakeBtn').addEventListener('click', goBack);
   $('keepBtn').addEventListener('click', async () => {

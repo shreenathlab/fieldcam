@@ -441,5 +441,5 @@ img { -webkit-user-drag: none; }
 .perm-row .what { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .perm-row .st { font-size: 14px; font-weight: 600; color: var(--muted); }
 .perm-row .st.ok { color: var(--ok); } .perm-row .st.warn { color: var(--warn); } .perm-row .st.bad { color: var(--bad); }
-.perm-row .fix { font-size: 13px; color: var(--muted); }
+.perm-row .fix { font-size: 13px; color: var(--muted); white-space: pre-line; }
 .perm-row .btn { flex: none; padding: 8px 14px; }
