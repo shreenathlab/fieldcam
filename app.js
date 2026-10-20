@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.6';
+const APP_VERSION = '4.4.7';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -598,7 +598,16 @@ async function loadBootstrap() {
     return r;
   }
   // A job submitted on this phone without internet stays submitted here until the server has it
-  const waitingOps = ((await kvGet('pendingOps').catch(() => null)) || []).filter((o) => o.action === 'submit');
+  // ... and jobs made / changed on this phone without internet are kept until the server has them
+  const ops = (await kvGet('pendingOps').catch(() => null)) || [];
+  for (const op of ops) {
+    if (op.new_id && !r.jobs.some((j) => j.id === op.new_id)) {
+      r.jobs.unshift({ ...op.job, pending_create: true, sync_error: op.error ? op.error + ' — tap Edit to change it' : '' });
+    } else if (op.type === 'admin' && op.action === 'job_save' && op.id) {
+      r.jobs = r.jobs.map((j) => (j.id === op.id ? { ...j, job_number: op.job_number, site_name: op.site_name, location_name: op.location_name, save_local: op.save_local, active: op.active, pending: true } : j));
+    }
+  }
+  const waitingOps = ops.filter((o) => o.action === 'submit');
   if (waitingOps.length) {
     const ids = new Set(waitingOps.map((o) => o.id));
     r.jobs = r.jobs.map((j) => (ids.has(j.id) && j.status !== 'submitted' ? { ...j, status: 'submitted', submitted_at: new Date().toISOString(), pending: true } : j));
@@ -803,7 +812,8 @@ function renderJobs() {
   $('jobList').innerHTML = open.length ? open.map((j) => `
     <li class="job ${j.active ? '' : 'inactive'}" data-id="${esc(j.id)}">
       <button class="job-open"><span class="job-no">${esc(j.job_number)}</span><span class="job-site">${loc(j)}</span>
-        ${j.active ? '' : '<span class="job-tag">Hidden from staff</span>'}</button>
+        ${j.active ? '' : '<span class="job-tag">Hidden from staff</span>'}
+        ${j.pending_create || j.pending ? `<span class="job-tag wait">${j.sync_error ? '⚠ ' + esc(j.sync_error) : `Saved on this phone — goes to ${esc(STORE_THE)} when online`}</span>` : ''}</button>
       ${admin ? '<button class="job-edit">Edit</button>' : ''}
     </li>`).join('')
     : `<li class="empty">${anyOpen ? 'No job matches your search.' : admin ? 'No open jobs. Tap “+ New job” to create one.' : 'No jobs yet. Ask an admin to create one.'}</li>`;
@@ -837,7 +847,8 @@ async function submitJob() {
   $('submitJobBtn').disabled = true;
   try {
     const op = { action: 'submit', id: job.id, photographer_name: state.photographer || '' };
-    const r = navigator.onLine ? await api('job.php', { json: op, timeout: 20000 }) : { status: 0 };
+    // a job made on this phone that is not on the server yet: its submission waits behind it
+    const r = navigator.onLine && !job.pending_create ? await api('job.php', { json: op, timeout: 20000 }) : { status: 0 };
     let done = r.job;
     if (r.status === 0) {
       // No / too slow internet: the submission waits on this phone and is sent automatically later
@@ -856,30 +867,69 @@ async function submitJob() {
     loadBootstrap();
   } finally { $('submitJobBtn').disabled = false; }
 }
-/* Actions done without internet (submit job) wait here and are sent when the connection is back. */
+/* Actions done without internet wait here, in order, and are sent when the connection is back:
+   new jobs and job changes (admins), submitting a job. Photos of a job made offline upload only after
+   the job itself has reached the server. */
 async function addPendingOp(op) {
   const ops = (await kvGet('pendingOps')) || [];
-  if (!ops.some((o) => o.action === op.action && o.id === op.id)) ops.push(op);
+  // the same action on the same job again (e.g. edited twice): keep only the newest, in its old place
+  const i = ops.findIndex((o) => (o.type || 'job') === (op.type || 'job') && o.action === op.action && o.id && o.id === op.id);
+  if (i >= 0) ops[i] = op; else ops.push(op);
   await kvSet('pendingOps', ops);
 }
-let flushingOps = false;
-async function flushPendingOps() {
-  if (flushingOps || !state.auth || !navigator.onLine) return;
-  flushingOps = true;
-  try {
-    const ops = (await kvGet('pendingOps')) || [];
-    if (!ops.length) return;
-    const left = [];
-    for (const op of ops) {
-      const r = await api('job.php', { json: op, timeout: 30000 });
-      if (r.status === 0) { left.push(op); continue; }              // still no internet: keep it
-      if (!r.ok && r.status !== 404) toast(`Job could not be submitted: ${r.error || r.status}`, true);
-    }
-    await kvSet('pendingOps', left);
-    if (left.length < ops.length) loadBootstrap();
-  } finally { flushingOps = false; }
+/** A job made offline was changed before it was sent: send the new details instead. */
+async function updatePendingCreate(job) {
+  const ops = (await kvGet('pendingOps')) || [];
+  const op = ops.find((o) => o.new_id === job.id);
+  if (op) {
+    Object.assign(op, { job_number: job.job_number, site_name: job.site_name, location_name: job.location_name, save_local: job.save_local, active: job.active });
+    op.job = { ...job }; delete op.error; delete job.sync_error;
+  }
+  await kvSet('pendingOps', ops);
 }
-async function reopenJob(job) {
+/** Ids of jobs made on this phone that the server does not have yet. */
+async function pendingJobIds() {
+  return new Set(((await kvGet('pendingOps').catch(() => null)) || []).filter((o) => o.new_id).map((o) => o.new_id));
+}
+let flushingOps = null;
+function flushPendingOps() {
+  if (!state.auth || !navigator.onLine) return Promise.resolve();
+  if (!flushingOps) flushingOps = doFlush().finally(() => { flushingOps = null; });
+  return flushingOps;
+}
+async function doFlush() {
+  const ops = (await kvGet('pendingOps')) || [];
+  if (!ops.length) return;
+  const left = [], held = new Set();                    // jobs whose creation did not go through: their later actions wait too
+  let offline = false, changed = false;
+  for (const op of ops) {
+    const jobId = op.new_id || op.id;
+    if (offline || held.has(jobId)) { left.push(op); continue; }
+    const { type, job, error, ...body } = op;
+    const r = await api(type === 'admin' ? 'admin.php' : 'job.php', { json: body, timeout: 30000 });
+    if (r.status === 0) { offline = true; left.push(op); continue; }            // still no internet: keep the rest
+    if (r.ok) {
+      changed = true;
+      if (r.job) {                                       // the server's copy replaces the one on this phone
+        const i = state.jobs.findIndex((x) => x.id === r.job.id);
+        const keepSubmitted = i >= 0 && state.jobs[i].status === 'submitted' && ops.some((o) => o.action === 'submit' && o.id === r.job.id);
+        if (i >= 0) state.jobs[i] = keepSubmitted ? { ...r.job, status: 'submitted', pending: true } : r.job;
+        if (state.job?.id === r.job.id) state.job = state.jobs[i];
+      }
+      continue;
+    }
+    if (op.new_id) {
+      // e.g. that Sub-Job No. was made on another phone meanwhile: keep everything, tell the admin to change it
+      op.error = r.error || 'Could not create the job';
+      held.add(jobId); left.push(op);
+      const j = state.jobs.find((x) => x.id === jobId); if (j) j.sync_error = op.error + ' — tap Edit to change it';
+      toast(`Job ${op.job_number}: ${op.error}. Edit the job to fix it — its photos wait on this phone.`, true, 7000);
+    } else if (r.status !== 404) toast(`Job ${op.job_number || ''} could not be updated: ${r.error || r.status}`, true);
+    changed = true;
+  }
+  await kvSet('pendingOps', left);
+  if (changed) { kvSet('jobs', state.jobs); renderJobs(); if (!offline) loadBootstrap(); }
+}async function reopenJob(job) {
   const ok = await askConfirm({
     title: `Reopen job ${job.job_number}?`,
     html: '<p>The job goes back into the job list, so staff can take photos for it again.</p>',
@@ -914,16 +964,44 @@ async function saveJob(e) {
   e.preventDefault();
   const j = state.editingJob;
   const label = $('jobSave').textContent;
+  const fields = {
+    job_number: $('jNo').value.trim(), site_name: $('jSite').value.trim(), location_name: $('jLoc').value.trim(),
+    save_local: $('jSaveLocal').checked, active: j ? $('jActive').checked : true,
+  };
+  if (!fields.job_number || !fields.site_name || !fields.location_name) { $('jobErr').textContent = 'Sub-Job No., project name and site location are all required'; return; }
+  if (state.jobs.some((x) => x.id !== j?.id && String(x.job_number).toLowerCase() === fields.job_number.toLowerCase())) {
+    $('jobErr').textContent = `Sub-Job No. ${fields.job_number} already exists`; return;
+  }
   $('jobSave').disabled = true; $('jobSave').textContent = 'Saving…'; $('jobErr').textContent = '';
   try {
-    const active = j ? $('jActive').checked : true;
-    const r = await api('admin.php', { json: { action: 'job_save', id: j?.id || '', job_number: $('jNo').value, site_name: $('jSite').value, location_name: $('jLoc').value, save_local: $('jSaveLocal').checked, active } });
-    if (!r.ok) { $('jobErr').textContent = r.error; return; }
-    let job = r.job;
-    if (job && job.active !== active) {                // server older than 4.4: hide/show is a second request
-      const r2 = await api('admin.php', { json: { action: 'job_active', id: job.id, active } });
-      if (!r2.ok) { $('jobErr').textContent = r2.error; return; }
-      job = r2.job || job;
+    let job, offline = false;
+    if (j?.pending_create) {
+      // made on this phone and not in Google Drive yet: just change it here (it is sent with these details)
+      job = { ...j, ...fields };
+      await updatePendingCreate(job);
+      offline = true;
+    } else {
+      const r = navigator.onLine ? await api('admin.php', { json: { action: 'job_save', id: j?.id || '', ...fields }, timeout: 20000 }) : { status: 0 };
+      if (r.status === 0) {
+        // No / too slow internet: the job is made (or changed) on this phone now and sent to Google Drive later
+        offline = true;
+        if (j) {
+          job = { ...j, ...fields, pending: true };
+          await addPendingOp({ type: 'admin', action: 'job_save', id: j.id, ...fields });
+        } else {
+          const id = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join('');
+          job = { id, ...fields, folder_id: null, created_at: new Date().toISOString(), created_by: state.auth?.user, pending_create: true };
+          await addPendingOp({ type: 'admin', action: 'job_save', id: '', new_id: id, ...fields, job });
+        }
+      } else if (!r.ok) { $('jobErr').textContent = r.error; return; }
+      else {
+        job = r.job;
+        if (job && job.active !== fields.active) {        // server older than 4.4: hide/show is a second request
+          const r2 = await api('admin.php', { json: { action: 'job_active', id: job.id, active: fields.active } });
+          if (!r2.ok) { $('jobErr').textContent = r2.error; return; }
+          job = r2.job || job;
+        }
+      }
     }
     // Show the change at once; the full list refreshes in the background
     if (job) {
@@ -933,17 +1011,33 @@ async function saveJob(e) {
       kvSet('jobs', state.jobs);
       renderJobs();
     }
-    toast(j ? 'Job updated' : 'Job created');
+    toast(offline ? `${j ? 'Job updated' : 'Job created'} on this phone — you can use it now; it goes to ${STORE_THE} when the internet is back` : (j ? 'Job updated' : 'Job created'), false, offline ? 5000 : 2800);
     state.editingJob = null;
     closeSheet();
-    loadBootstrap();
+    if (offline) syncQueue(); else loadBootstrap();
   } finally { $('jobSave').disabled = false; $('jobSave').textContent = label; }
 }
-
 /** Admin: delete a wrong job entry. Photos already in Google Drive are never deleted. */
 async function deleteJob() {
   const j = state.editingJob; if (!j) return;
   const waiting = (await qAll()).filter((r) => r.meta?.job_id === j.id).length;
+  if (j.pending_create) {
+    // made on this phone without internet and never sent: remove it here (and its waiting photos)
+    const yes = await askConfirm({
+      title: `Delete job ${j.job_number}?`,
+      html: `<p>This job was made on this phone and is <b>not in ${esc(STORE_THE)} yet</b>. It is removed from this phone.</p>
+        ${waiting ? `<p class="warn-line">Its ${waiting} photo(s)/video(s) waiting on this phone are deleted too.</p>` : ''}`,
+      yes: 'Delete job',
+    });
+    if (!yes) return;
+    await kvSet('pendingOps', ((await kvGet('pendingOps')) || []).filter((o) => o.id !== j.id && o.new_id !== j.id));
+    for (const r of await qAll()) if (r.meta?.job_id === j.id) await qRemove(r.uid);
+    state.jobs = state.jobs.filter((x) => x.id !== j.id); kvSet('jobs', state.jobs);
+    state.editingJob = null; refreshBadge();
+    toast(`Job ${j.job_number} deleted`); closeSheet(); renderJobs();
+    return;
+  }
+  if (!navigator.onLine) { $('jobErr').textContent = 'Deleting a job needs internet — try again when online'; return; }
   const ok = await askConfirm({
     title: `Delete job ${j.job_number}?`,
     html: `<p>The job is removed from the job list for everyone. Use this for a <b>wrong job entry</b>.</p>
@@ -2112,9 +2206,10 @@ async function uploadRecord(rec) {
 }// Two photos/videos upload at the same time (faster on good networks). A worker looks at the queue again
 // before every file, and a new photo starts a second worker at once — it never waits for the others to finish.
 const sync = { workers: 0, tried: new Set(), stop: false };
-function syncQueue() {
+async function syncQueue() {
   if (!state.auth || !navigator.onLine) return;
-  flushPendingOps();
+  await flushPendingOps();                              // new jobs first: their photos need them on the server
+  if (!state.auth || !navigator.onLine) return;
   if (!sync.workers) { sync.tried.clear(); sync.stop = false; }   // new round: files that failed are tried again
   // weak internet: one file at a time, so it gets all of the connection and finishes
   while (sync.workers < (slowNet() ? 1 : 2)) syncWorker();
@@ -2123,7 +2218,8 @@ async function syncWorker() {
   sync.workers++; state.syncing = true; renderNet();
   try {
     while (!sync.stop) {
-      const rec = (await qAll()).filter((r) => r.complete && !sync.tried.has(r.uid)).sort((a, b) => a.created - b.created)[0];
+      const waitJobs = await pendingJobIds();           // job made offline, not on the server yet: its photos wait
+      const rec = (await qAll()).filter((r) => r.complete && !sync.tried.has(r.uid) && !waitJobs.has(r.meta?.job_id)).sort((a, b) => a.created - b.created)[0];
       if (!rec) break;
       sync.tried.add(rec.uid);
       const res = await uploadRecord(rec);

@@ -443,3 +443,5 @@ img { -webkit-user-drag: none; }
 .perm-row .st.ok { color: var(--ok); } .perm-row .st.warn { color: var(--warn); } .perm-row .st.bad { color: var(--bad); }
 .perm-row .fix { font-size: 13px; color: var(--muted); white-space: pre-line; }
 .perm-row .btn { flex: none; padding: 8px 14px; }
+
+.job-tag.wait { background: transparent; border: 1px solid var(--warn); color: var(--warn); }
