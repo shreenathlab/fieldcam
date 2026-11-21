@@ -148,6 +148,7 @@
 <section id="cam" class="screen" hidden>
   <video id="video" playsinline muted autoplay></video>
   <canvas id="preview"></canvas>
+  <div id="focusRing" hidden></div>
   <div id="flash"></div>
 
   <div id="camError" class="cam-error" hidden>
@@ -220,6 +221,8 @@
 <!-- ================= REVIEW ================= -->
 <div id="review" class="overlay" hidden>
   <img id="reviewImg" alt="Captured photo">
+  <video id="reviewVideo" controls playsinline hidden></video>
+  <p id="reviewNote" hidden></p>
   <div class="review-bar">
     <button class="btn" id="retakeBtn">Retake</button>
     <button class="btn primary" id="keepBtn">Save &amp; upload</button>
@@ -311,6 +314,13 @@
       <button type="button" role="radio" data-theme="dark">Dark</button>
       <button type="button" role="radio" data-theme="light">Light</button>
     </div>
+    <div id="apkBox" hidden>
+      <label class="toggle-row" id="nativeCamRow">Use the phone's own camera for photos (best quality)<input type="checkbox" id="nativeCamToggle"></label>
+      <p class="set-label">App updates</p>
+      <p class="muted small" id="otaLine"></p>
+      <button class="btn wide" id="otaCheckBtn" type="button">Check for app update</button>
+      <button class="btn wide primary" id="otaApplyBtn" type="button" hidden>Restart now to use the new version</button>
+    </div>
     <button class="btn wide" id="adminBtn" hidden>Admin Settings</button>
     <p class="muted small" id="staffNote">Photo and stamp settings are managed by your admin.</p>
     <button class="btn wide" id="logoutBtn">Log out</button>
@@ -374,7 +384,6 @@
     <label class="toggle-row">JPEG quality
       <select id="aQuality"><option value="0.92">High</option><option value="0.85">Normal</option><option value="0.75">Low</option></select>
     </label>
-    <label class="toggle-row">Review each photo before saving<input type="checkbox" id="aReview"></label>
     <p class="muted small">Field photos are always landscape. Laboratory photos and all videos can be portrait or landscape.</p>
 
     <h3>Laboratory stamp</h3>

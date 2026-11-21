@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '4.4.7';
+const APP_VERSION = '5.0.0';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -16,6 +16,8 @@ const STORE_THE = GAS_URL ? 'Google Drive' : 'the NAS';     // "reached Google D
 const IS_NATIVE = !GAS_URL && !!(window.Capacitor?.isNativePlatform?.() || window.FIELDCAM_CONFIG?.native);
 /* Bridge from the Android WebView app (android/), which loads this page from the web. */
 const ANDROID_APP = window.FieldCamAndroid || null;
+// Android app 5: the app runs from the files built into the APK, at this private address (no website needed)
+const LOCAL_APP = location.hostname === 'appassets.androidplatform.net';
 let nasUrl = (window.FIELDCAM_CONFIG?.server || '').trim();
 function apiUrl(path) {
   if (!nasUrl) return 'api/' + path;
@@ -1253,7 +1255,7 @@ function setPerm(id, cls, text, fix) { permState[id] = { cls, text, fix: fix || 
 async function quietPermCheck() {
   for (const p of permList()) {
     if (p.id === 'geolocation' && freshGps()) { gpsPermState(freshGps()); continue; }
-    if (p.id === 'camera' && state.stream?.getVideoTracks().some((t) => t.readyState === 'live')) { setPerm('camera', 'ok', '✓ Allowed'); continue; }
+    if (p.id === 'camera' && (state.native || state.stream?.getVideoTracks().some((t) => t.readyState === 'live'))) { setPerm('camera', 'ok', '✓ Allowed'); continue; }
     try {
       const r = await navigator.permissions?.query?.({ name: p.id });
       if (!r) continue;
@@ -1272,7 +1274,7 @@ async function askPerm(id) {
   const blocked = (e) => (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError' || e.code === 1));
   try {
     if (id === 'camera' || id === 'microphone') {
-      if (id === 'camera' && state.stream?.getVideoTracks().some((t) => t.readyState === 'live')) return setPerm(id, 'ok', '✓ Allowed');
+      if (id === 'camera' && (state.native || state.stream?.getVideoTracks().some((t) => t.readyState === 'live'))) return setPerm(id, 'ok', '✓ Allowed');
       const s = await navigator.mediaDevices.getUserMedia(id === 'camera' ? { video: true } : { audio: true });
       s.getTracks().forEach((t) => t.stop());
       return setPerm(id, 'ok', '✓ Allowed');
@@ -1330,11 +1332,14 @@ window.addEventListener('devicemotion', (e) => {
 function askMotionPermission() {
   try { if (typeof DeviceMotionEvent?.requestPermission === 'function') DeviceMotionEvent.requestPermission().catch(() => {}); } catch {}
 }
-function frameIsLandscape() { const v = $('video'); return v.videoWidth > v.videoHeight; }
+/** Size of the live picture: the page's <video>, or Android's camera behind the page (APK 5). */
+function camW() { return state.native ? state.native.w : $('video').videoWidth; }
+function camH() { return state.native ? state.native.h : $('video').videoHeight; }
+function frameIsLandscape() { return camW() > camH(); }
 /** Camera-app style: phone held sideways while the screen stays upright → the photo is turned to landscape. */
-function sideCapture() { return state.mode === 'photo' && !!$('video').videoWidth && !frameIsLandscape() && sideDir !== 0; }
+function sideCapture() { return state.mode === 'photo' && !!camW() && !frameIsLandscape() && sideDir !== 0; }
 /** Only FIELD photos must be landscape; Laboratory photos and all videos can be either way. */
-function photoBlocked() { return state.type === 'Field' && state.mode === 'photo' && !!$('video').videoWidth && !frameIsLandscape() && !sideCapture(); }
+function photoBlocked() { return state.type === 'Field' && state.mode === 'photo' && !!camW() && !frameIsLandscape() && !sideCapture(); }
 /** Turn an upright (portrait) camera picture into the landscape photo the user is holding:
  *  dir +1 (turned left) → rotate 90° anticlockwise; dir -1 (turned right) → 90° clockwise. */
 function rotateSideways(img, dir) {
@@ -1374,6 +1379,8 @@ function leaveCamera() { stopCamera(); }
 async function startCamera() {
   stopCamera();
   $('camError').hidden = true;
+  // Android app 5: photos with Android's own camera engine (full phone quality); videos and other phones as before
+  if (state.mode === 'photo' && useNativeCam() && await openNativeCam()) return;
   if (!navigator.mediaDevices?.getUserMedia) return camFail('This browser cannot open the camera. Open the app over https:// in Chrome (Android) or Safari (iPhone).');
   // Phones with several back lenses: use the MAIN camera (not telephoto/macro), so 1.0× looks the same on every phone
   const mainId = state.facing === 'environment' && !state.noMainCam ? mainBackCameraId() : null;
@@ -1432,7 +1439,74 @@ function camMsg(e) {
 function stopCamera() {
   state.stream?.getTracks().forEach((t) => t.stop());
   state.stream = state.track = state.imageCapture = null;
+  if (state.native || nativeCam.opening) { try { ANDROID_APP.camClose(); } catch {} }
+  state.native = null; nativeCam.opening = false;
+  document.documentElement.classList.remove('native-cam');
 }
+/* ---------- Android's own camera (APK 5): live picture behind the page, full-quality photos ----------
+   The APK draws the camera picture behind the (then transparent) page; zoom, flash and focus are the
+   camera's own. Photos come back as a file on the app's local address. Anything going wrong → the page's
+   camera as before (and Settings has a switch to turn it off on a phone). */
+const nativeCam = { wait: null, shotWait: null, opening: false };
+window.fcNativeCam = {
+  opened(r) { nativeCam.wait?.(r); },
+  shot(r) { nativeCam.shotWait?.(r); },
+  size(s) { if (state.native && s?.w && s?.h) { state.native.w = s.w; state.native.h = s.h; layoutPreview(); } },
+};
+function useNativeCam() {
+  try {
+    return typeof ANDROID_APP?.camOpen === 'function' && ANDROID_APP.camAvailable() && !state.nativeFailed
+      && localStorage.getItem('fc-native-cam') !== 'off';
+  } catch { return false; }
+}
+async function openNativeCam() {
+  nativeCam.opening = true;
+  const r = await new Promise((res) => {
+    nativeCam.wait = res;
+    try { ANDROID_APP.camOpen(state.facing === 'user'); } catch (e) { res({ ok: false, error: String(e) }); }
+    setTimeout(() => res({ ok: false, error: 'the camera did not answer' }), 8000);
+  });
+  nativeCam.wait = null;
+  if (!nativeCam.opening) return true;                     // the camera screen was left meanwhile (already closed)
+  nativeCam.opening = false;
+  if (!r.ok) {
+    console.warn('Android camera:', r.error);
+    state.nativeFailed = true;                             // this session: use the page's camera instead
+    try { ANDROID_APP.camClose(); } catch {}
+    return false;
+  }
+  document.documentElement.classList.add('native-cam');
+  state.native = { w: r.size?.w || 4, h: r.size?.h || 3 };
+  state.streamMode = 'photo';
+  state.zoomHw = r.zmax > r.zmin ? { min: r.zmin, max: r.zmax } : null;
+  state.zoom = 1; applyZoom(1, true);
+  $('torchBtn').hidden = !r.torch;
+  state.torch = false; $('torchBtn').classList.remove('on');
+  layoutPreview();
+  return true;
+}
+async function nativeShot() {
+  const r = await new Promise((res) => {
+    nativeCam.shotWait = res;
+    try { ANDROID_APP.camTake(); } catch (e) { res({ ok: false, error: String(e) }); }
+    setTimeout(() => res({ ok: false, error: 'The camera did not answer — try again' }), 20000);
+  });
+  nativeCam.shotWait = null;
+  if (!r.ok) throw new Error(r.error || 'Capture failed');
+  const res = await fetch(r.url);
+  if (!res.ok) throw new Error('Could not read the photo');
+  return await res.blob();
+}
+/** Tap on the live picture = focus there (Android's camera). */
+function nativeFocusAt(x, y) {
+  if (!state.native || !previewRect.w) return;
+  const fx = (x - previewRect.x) / previewRect.w, fy = (y - previewRect.y) / previewRect.h;
+  if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+  try { ANDROID_APP.camFocus(fx, fy); } catch {}
+  const ring = $('focusRing');
+  if (ring) { ring.style.left = x + 'px'; ring.style.top = y + 'px'; ring.hidden = false; ring.classList.remove('go'); void ring.offsetWidth; ring.classList.add('go'); clearTimeout(ring._t); ring._t = setTimeout(() => { ring.hidden = true; }, 900); }
+}
+
 /* ---------- main back camera (Android phones with several back lenses) ---------- */
 function mainBackCameraId() { try { return localStorage.getItem('fc-main-cam') || null; } catch { return null; } }
 function forgetMainCamera() { try { localStorage.removeItem('fc-main-cam'); } catch {} }
@@ -1530,6 +1604,7 @@ function renderZoom(z) {
   clipZoomedVideo();
 }
 function sendHwZoom(z) {
+  if (state.native) { try { ANDROID_APP.camZoom(z); } catch {} return; }       // Android's camera: its own smooth zoom
   if (zoomAnim.hwBusy) { zoomAnim.hwNext = z; return; }  // camera still busy: remember only the newest value
   const t = state.track; if (!t?.applyConstraints) return;
   zoomAnim.hwBusy = true;
@@ -1645,12 +1720,20 @@ function wirePinchZoom() {
   cam.addEventListener('pointermove', (e) => {
     if (!pinch.pts.has(e.pointerId)) return;
     pinch.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pinch.pts.size === 2 && state.stream) applyZoom(pinch.startZoom * (pinchDist() / pinch.startDist));
+    if (pinch.pts.size === 2 && (state.stream || state.native)) applyZoom(pinch.startZoom * (pinchDist() / pinch.startDist));
   });
   const end = (e) => { pinch.pts.delete(e.pointerId); if (pinch.pts.size < 2) pinch.startDist = 0; };
   cam.addEventListener('pointerup', end); cam.addEventListener('pointercancel', end); cam.addEventListener('pointerleave', end);
+  // Android's camera: a short single tap on the live picture focuses there (not on buttons, not after a pinch)
+  let tap = null;
+  cam.addEventListener('pointerdown', (e) => { tap = pinch.pts.size <= 1 && (e.target === cam || e.target.id === 'preview') ? { x: e.clientX, y: e.clientY, t: Date.now() } : null; });
+  cam.addEventListener('pointermove', () => { if (pinch.pts.size > 1) tap = null; });
+  cam.addEventListener('pointerup', (e) => {
+    if (tap && Date.now() - tap.t < 400 && Math.hypot(e.clientX - tap.x, e.clientY - tap.y) < 12) nativeFocusAt(e.clientX, e.clientY);
+    tap = null;
+  });
   // Computer: Ctrl + mouse wheel zooms the camera
-  cam.addEventListener('wheel', (e) => { if (!e.ctrlKey || !state.stream) return; e.preventDefault(); applyZoom((zoomAnim.target || 1) * (e.deltaY < 0 ? 1.1 : 0.9)); }, { passive: false });
+  cam.addEventListener('wheel', (e) => { if (!e.ctrlKey || !(state.stream || state.native)) return; e.preventDefault(); applyZoom((zoomAnim.target || 1) * (e.deltaY < 0 ? 1.1 : 0.9)); }, { passive: false });
   $('zoomPill').addEventListener('click', () => applyZoom(1));
 }
 /* The app screen itself never zooms (iPhone ignores the page setting, so stop its zoom gestures too) */
@@ -1678,7 +1761,7 @@ function setMode(mode, silent) {
 let previewRect = { x: 0, y: 0, w: 0, h: 0 };
 function layoutPreview() {
   const v = $('video'), c = $('preview');
-  const vw = v.videoWidth, vh = v.videoHeight, W = window.innerWidth, H = window.innerHeight;
+  const vw = camW(), vh = camH(), W = window.innerWidth, H = window.innerHeight;
   if (!vw || !vh) return;
   const s = Math.min(W / vw, H / vh);                  // object-fit: contain
   previewRect = { w: vw * s, h: vh * s, x: (W - vw * s) / 2, y: (H - vh * s) / 2 };
@@ -1716,6 +1799,7 @@ function drawPreview() {
 }
 
 async function grabFrame() {
+  if (state.native) return nativeShot();
   if (state.imageCapture) {
     try {
       // Ask the camera for a still photo of the size we will keep — not 50 MP that would only be shrunk (much faster)
@@ -1794,6 +1878,7 @@ async function onShutter() {
       // Camera-app style: turn the upright picture into the landscape photo the user is holding
       const rotated = rotateSideways(bmp, turn); bmp.close?.(); bmp = rotated;
     } else if (state.type === 'Field' && bmp.height > bmp.width) {   // camera returned an upright still — use the (landscape) live frame
+      if (state.native) { bmp.close?.(); throw new Error('Turn your phone sideways — field photos are landscape only'); }
       bmp.close?.(); bmp = digitalCrop(await toBitmap(await videoFrame()));
       if (bmp.height > bmp.width) { bmp.close?.(); throw new Error('Turn your phone sideways — field photos are landscape only'); }
     }
@@ -1817,31 +1902,66 @@ async function onShutter() {
     // photo is already shown for review (or the shutter is already free again)
     const blobP = new Promise((res) => c.toBlob(res, 'image/jpeg', pc.quality)).then((b) => { c.width = c.height = 0; return b; });
     state.encoding = blobP;
-    if (pc.review) {
-      const k = Math.min(1, 1600 / Math.max(w, h)), sm = document.createElement('canvas');
-      sm.width = Math.round(w * k); sm.height = Math.round(h * k);
-      sm.getContext('2d').drawImage(c, 0, 0, sm.width, sm.height);
-      const small = await new Promise((res) => sm.toBlob(res, 'image/jpeg', 0.85));
-      state.pending = { blobP, meta, url: URL.createObjectURL(small || await blobP) };
-      $('reviewImg').src = state.pending.url;
-      $('review').hidden = false;
-      pushNav();
-    } else {
-      blobP.then((b) => { if (!b) throw new Error('Could not create photo'); return savePhoto(b, meta); })
-        .catch((e) => toast(e.message || 'Could not save the photo', true));
-    }
+    // Always a preview first (owner, 21 Nov 2026): check the photo for mistakes before it is saved
+    const k = Math.min(1, 1600 / Math.max(w, h)), sm = document.createElement('canvas');
+    sm.width = Math.round(w * k); sm.height = Math.round(h * k);
+    sm.getContext('2d').drawImage(c, 0, 0, sm.width, sm.height);
+    const small = await new Promise((res) => sm.toBlob(res, 'image/jpeg', 0.85));
+    state.pending = { kind: 'photo', blobP, meta, url: URL.createObjectURL(small || await blobP) };
+    $('reviewImg').src = state.pending.url;
+    $('review').hidden = false;
+    pushNav();
   } catch (e) {
     toast(e.message || 'Capture failed', true);
   } finally {
     state.busy = false; $('shutter').classList.remove('busy');
   }
 }
+/* Preview of the video just recorded (same screen as the photo preview): play it, then Save & upload or
+   Retake (deletes it, after asking). The phone's Back button keeps it — a long video is never lost by a slip. */
+const VIDEO_PREVIEW_MAX = 400 * 1024 * 1024;
+async function showVideoReview(record, dur) {
+  const v = $('reviewVideo'), note = $('reviewNote');
+  let url = '';
+  if (record.size <= VIDEO_PREVIEW_MAX) {
+    try {
+      const parts = [];
+      for (let i = 0; i < record.total; i++) parts.push(await unseal(await chunkGet(record.uid, i)));
+      url = URL.createObjectURL(new Blob(parts, { type: record.ext === 'webm' ? 'video/webm' : 'video/mp4' }));
+    } catch { url = ''; }
+  }
+  state.pending = { kind: 'video', record, url, dur };
+  $('reviewImg').hidden = true;
+  v.hidden = !url; note.hidden = !!url;
+  if (url) { v.src = url; v.currentTime = 0; v.play().catch(() => {}); }
+  else note.textContent = `Video saved (${Math.round(dur)} s, ${fmtBytes(record.size)}) — too long to play back on the phone. Tap “Save & upload”.`;
+  $('retakeBtn').textContent = 'Retake (delete)';
+  $('review').hidden = false;
+  pushNav();
+}
 function endReview() {
   setTimeout(updateOrientation, 0);
-  if (state.pending) URL.revokeObjectURL(state.pending.url);
-  $('reviewImg').removeAttribute('src');
+  const p = state.pending;
+  if (p) URL.revokeObjectURL(p.url);
+  $('reviewImg').removeAttribute('src'); $('reviewImg').hidden = false;
+  const v = $('reviewVideo'); v.pause(); v.removeAttribute('src'); v.load(); v.hidden = true;
+  $('reviewNote').hidden = true;
+  $('retakeBtn').textContent = 'Retake';
   state.pending = null;
   $('review').hidden = true;
+  if (p?.kind === 'video') {
+    if (p.discard) {
+      qRemove(p.record.uid).then(refreshBadge);
+      toast('Video deleted');
+    } else {
+      // Save & upload (or Back): from now on it uploads like any other video
+      qPut({ ...p.record, complete: true, status: 'pending' }).then(() => {
+        refreshBadge();
+        toast(`Video saved (${Math.round(p.dur)} s, ${fmtBytes(p.record.size)}) — ${navigator.onLine ? 'uploading…' : 'will upload when online'}`);
+        syncQueue();
+      });
+    }
+  }
 }
 /* ======================= upload photos from the phone (taken earlier with another camera) ======================= */
 const upload = { files: [], type: 'Field', coordMode: 'latlon', urls: [] };
@@ -1964,7 +2084,8 @@ async function submitUpload(e) {
 function localName(meta) {
   const d = new Date(meta.captured_at), safe = (s) => String(s || '').replace(/[\\/:*?"<>|]+/g, '_').trim();
   const stamp = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}-${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
-  return `${safe(meta.job_number)}-${safe(meta.test_name) || 'Field'}-${stamp}.jpg`;
+  // same pattern as in Google Drive: Sub-Job No-Project Name-Test Name-Text-<date time>
+  return [safe(meta.job_number), safe(meta.site_name).slice(0, 60), safe(meta.test_name).slice(0, 60) || 'Field', safe(meta.custom_text).slice(0, 60)].filter(Boolean).join('-') + `-${stamp}.jpg`;
 }
 async function saveToPhone(blob, name) {
   // Android app: straight into the gallery (Pictures/FieldCam), sent in pieces
@@ -2076,15 +2197,17 @@ async function startRecording() {
     rec.timers.forEach(clearInterval);
     const dur = (Date.now() - rec.started) / 1000;
     meta.duration_s = Math.round(dur * 10) / 10;
-    await qPut({ uid: meta.uid, kind: 'video', ext, meta, total: rec.idx, chunk: CHUNK, sent: 0, complete: rec.idx > 0, created: rec.started, size: rec.size, status: 'pending', error: '' });
+    // Kept on the phone but NOT uploaded until it was checked in the preview (if the app closes meanwhile,
+    // the video is kept and uploaded on the next start)
+    const record = { uid: meta.uid, kind: 'video', ext, meta, total: rec.idx, chunk: CHUNK, sent: 0, complete: false, created: rec.started, size: rec.size, status: 'review', error: '' };
+    await qPut(record);
     if (!rec.idx) await qRemove(meta.uid);
     state.rec = null;
     $('shutter').classList.remove('recording');
     $('recTimer').hidden = true;
     document.querySelector('.mode-switch').classList.remove('locked');
     drawPreview(); refreshBadge();
-    toast(`Video saved (${Math.round(dur)} s, ${fmtBytes(rec.size)}) — ${navigator.onLine ? 'uploading…' : 'will upload when online'}`);
-    syncQueue();
+    if (rec.idx) await showVideoReview(record, dur);
   };
 
   // Draw camera + stamp onto the recording canvas
@@ -2216,6 +2339,7 @@ async function syncQueue() {
 }
 async function syncWorker() {
   sync.workers++; state.syncing = true; renderNet();
+  refreshBadge();                                       // Android app: background notification from the first upload on
   try {
     while (!sync.stop) {
       const waitJobs = await pendingJobIds();           // job made offline, not on the server yet: its photos wait
@@ -2242,6 +2366,8 @@ async function refreshBadge() {
     b.hidden = !all.length; b.textContent = all.length;
     b.classList.toggle('bad', all.some((r) => r.status === 'error'));
   });
+  // Android app 5: keep uploading in the background (notification) while something is being sent
+  try { ANDROID_APP?.uploadsActive?.(state.syncing && navigator.onLine ? all.length : 0); } catch {}
 }
 let thumbUrls = [];
 function revokeThumbs() { thumbUrls.forEach(URL.revokeObjectURL); thumbUrls = []; }
@@ -2296,9 +2422,25 @@ function renderSettings() {
   $('photogName').textContent = state.photographer || '—';
   $('adminBtn').hidden = !admin;
   $('staffNote').hidden = admin;
-  $('changeNasBtn').hidden = !ANDROID_APP;
+  $('changeNasBtn').hidden = !ANDROID_APP || !!ANDROID_APP.nativeLevel;   // app 5: the app is built in, no address
   $('appVer').textContent = 'FieldCam ' + APP_VERSION + (ANDROID_APP ? ' · Android app ' + ANDROID_APP.version() : ' · browser') + '\n' + screenInfo();
+  renderApkBox();
   checkServer();
+}
+/** Android app 5: over-the-air update status and the camera switch. */
+function renderApkBox() {
+  const has = typeof ANDROID_APP?.otaInfo === 'function';
+  $('apkBox').hidden = !has;
+  if (!has) return;
+  let o = {};
+  try { o = JSON.parse(ANDROID_APP.otaInfo()); } catch {}
+  $('otaLine').textContent = `App version ${o.running || APP_VERSION}`
+    + (o.running && o.builtin && o.running !== o.builtin ? ` (updated over the air; built into the app: ${o.builtin})` : ' (built into the app)')
+    + `\nLast check: ${o.status || '—'}`;
+  $('otaApplyBtn').hidden = !o.pending;
+  $('nativeCamRow').hidden = typeof ANDROID_APP.camOpen !== 'function';
+  let on = true; try { on = localStorage.getItem('fc-native-cam') !== 'off'; } catch {}
+  $('nativeCamToggle').checked = on;
 }
 async function checkServer() {
   const box = $('serverBox');
@@ -2383,7 +2525,6 @@ function renderAdmin() {
   $('aMax').value = String(oldPhoto[pc.max_dim] ?? pc.max_dim);
   $('aQuality').value = String(pc.quality);
   if (!$('aQuality').value) $('aQuality').value = '0.85';
-  $('aReview').checked = !!pc.review;
   $('aPhotoAspect').value = pc.aspect || '';
   $('aVideoAspect').value = s.video?.aspect || '';
   const vr = s.video?.max_res ?? 0;
@@ -2449,7 +2590,7 @@ async function saveAdmin() {
   s.field.datetime = s.field.date || s.field.time;
   s.test_names = adminLists.test_names;
   s.field_test_names = adminLists.field_test_names;
-  s.photo = { max_dim: +$('aMax').value, quality: +$('aQuality').value, review: $('aReview').checked, aspect: $('aPhotoAspect').value };
+  s.photo = { max_dim: +$('aMax').value, quality: +$('aQuality').value, review: true, aspect: $('aPhotoAspect').value };
   s.video = { max_res: +$('aVideoRes').value, audio: $('aAudio').checked, aspect: $('aVideoAspect').value };
   $('adminSave').disabled = true;
   const r = await api('admin.php', { json: { action: 'settings_save', settings: s } });
@@ -2538,6 +2679,14 @@ function wire() {
   $('logoutBtn').addEventListener('click', logout);
   $('changeNasBtn').addEventListener('click', () => ANDROID_APP?.changeServer());
   $('themeSeg').addEventListener('click', (e) => { const b = e.target.closest('[data-theme]'); if (b) applyTheme(b.dataset.theme); });
+  // Android app 5: updates and the camera switch
+  $('otaCheckBtn').addEventListener('click', () => { try { ANDROID_APP.otaCheck(); } catch {} toast('Checking for an app update…'); setTimeout(renderApkBox, 1500); setTimeout(renderApkBox, 8000); });
+  $('otaApplyBtn').addEventListener('click', () => { try { ANDROID_APP.otaApply(); } catch {} });
+  $('nativeCamToggle').addEventListener('change', (e) => {
+    try { localStorage.setItem('fc-native-cam', e.target.checked ? 'on' : 'off'); } catch {}
+    state.nativeFailed = false;
+    toast(e.target.checked ? 'Photos use the phone’s own camera' : 'Photos use the in-app camera');
+  });
   $('submitJobBtn').addEventListener('click', submitJob);
   // upload photos from the phone
   $('uploadPick').addEventListener('click', () => $('uploadInput').click());
@@ -2578,7 +2727,8 @@ function wire() {
   $('torchBtn').addEventListener('click', async () => {
     try {
       state.torch = !state.torch;
-      await state.track.applyConstraints({ advanced: [{ torch: state.torch }] });
+      if (state.native) ANDROID_APP.camTorch(state.torch);
+      else await state.track.applyConstraints({ advanced: [{ torch: state.torch }] });
       $('torchBtn').classList.toggle('on', state.torch);
     } catch { toast('Torch not supported'); }
   });
@@ -2588,10 +2738,19 @@ function wire() {
     const b = e.target.closest('[data-ask]'); if (b) askPerm(b.dataset.ask);
   });
   $('permCheckAll').addEventListener('click', askAllPerms);
-  $('retakeBtn').addEventListener('click', goBack);
+  $('retakeBtn').addEventListener('click', async () => {
+    const p = state.pending;
+    if (p?.kind === 'video') {
+      const yes = await askConfirm({ title: 'Delete this video?', html: '<p>The video is deleted from the phone and NOT uploaded. Then record it again.</p>', yes: 'Delete video' });
+      if (!yes || state.pending !== p) return;
+      p.discard = true;
+    }
+    goBack();
+  });
   $('keepBtn').addEventListener('click', async () => {
     const p = state.pending; if (!p) return;
-    goBack();                                            // back to the camera at once; saving carries on in the background
+    goBack();
+    if (p.kind === 'video') return;                     // saved and uploaded by endReview                                            // back to the camera at once; saving carries on in the background
     p.blobP.then((b) => { if (!b) throw new Error('Could not create photo'); return savePhoto(b, p.meta); })
       .catch((e) => toast(e.message || 'Could not save', true));
   });
@@ -2614,7 +2773,92 @@ function wire() {
   setInterval(() => { renderGps(); if (state.screen === 'cam' && !openSheetId) { drawPreview(); updateOrientation(); } }, 1000);
 }
 
+/* ======================= moving to Android app 5 (app built into the APK) =======================
+   The 4.x Android app ran this page from the website, so its login, jobs and waiting photos are stored for
+   the website's address. On its first start the new APK opens the website page once with ?export=apk: the
+   page hands everything (waiting photos decrypted, piece by piece) to the APK, which keeps it in files until
+   the built-in app imports it here. Nothing is deleted from the old place. */
+const MIGRATE_KV = ['auth', 'jobs', 'settings', 'jobDetails', 'photographer', 'pendingOps', 'logo'];
+const MIGRATE_LS = ['fc-theme', 'fc-main-cam', 'fc-net-bps', 'fc-native-cam'];
+const enc = (v) => (v instanceof ArrayBuffer ? { __b64: toB64(v) } : ArrayBuffer.isView(v) ? { __b64: toB64(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength)) } : v);
+const dec = (v) => (v && typeof v === 'object' && typeof v.__b64 === 'string' ? fromB64(v.__b64) : v);
+async function exportForApk() {
+  const A = ANDROID_APP;
+  A.migrateBegin();
+  document.body.innerHTML = '<p style="font:16px sans-serif;padding:24px;color:#888">Moving FieldCam to the new app…</p>';
+  try {
+    const kv = {};
+    for (const k of MIGRATE_KV) {
+      const v = await kvGet(k);
+      if (v !== undefined) kv[k] = k === 'logo' && v ? { ...v, data: enc(v.data) } : v;
+    }
+    A.migratePut('kv', JSON.stringify(kv));
+    const ls = {};
+    for (const k of MIGRATE_LS) { try { const v = localStorage.getItem(k); if (v !== null) ls[k] = v; } catch {} }
+    A.migratePut('ls', JSON.stringify(ls));
+    const recs = await qAll();
+    for (const r of recs) {
+      // every stored part of the photo/video, unlocked here, sent in 512 KB slices
+      const n = await tx('chunks', 'readonly', (s) => s.count(IDBKeyRange.bound(r.uid + '#', r.uid + '#￿')));
+      r.parts = n;
+      for (let i = 0; i < n; i++) {
+        const c = await chunkGet(r.uid, i);
+        if (!c) { r.parts = i; break; }
+        const u8 = new Uint8Array(await unseal(c));
+        for (let o = 0; o < u8.length || o === 0; o += 512 * 1024) {
+          if (!A.migrateChunk(r.uid + '#' + i, toB64(u8.subarray(o, o + 512 * 1024)))) throw new Error('phone storage full');
+          if (!u8.length) break;
+        }
+      }
+    }
+    A.migratePut('queue', JSON.stringify(recs));
+    A.migrateDone(true);
+  } catch (e) {
+    console.warn('export', e);
+    A.migrateDone(false);
+  }
+}
+async function importFromOldApp() {
+  const A = ANDROID_APP;
+  try {
+    const kv = JSON.parse(A.migrateRead('kv') || '{}');
+    for (const [k, v] of Object.entries(kv)) {
+      if ((await kvGet(k)) !== undefined) continue;          // already set in the new app: keep that
+      await kvSet(k, k === 'logo' && v ? { ...v, data: dec(v.data) } : v);
+    }
+    const ls = JSON.parse(A.migrateRead('ls') || '{}');
+    for (const [k, v] of Object.entries(ls)) { try { if (localStorage.getItem(k) === null) localStorage.setItem(k, v); } catch {} }
+    const have = new Set((await qAll()).map((r) => r.uid));
+    for (const r of JSON.parse(A.migrateRead('queue') || '[]')) {
+      if (have.has(r.uid)) continue;
+      const n = r.parts || 0;
+      let okParts = 0;
+      for (let i = 0; i < n; i++) {
+        const b64 = A.migrateChunkRead(r.uid + '#' + i);
+        if (!b64) break;
+        await chunkPut(r.uid, i, await seal(fromB64(b64)));
+        okParts++;
+      }
+      if (!okParts) continue;
+      delete r.parts;
+      if (!r.complete) { r.total = okParts; r.complete = true; r.meta.interrupted = true; }
+      Object.assign(r, { sent: 0, piece: 0, pieces: 0, status: 'pending', error: '' });   // start its upload afresh
+      await qPut(r);
+    }
+    A.migrateClear();
+    return true;
+  } catch (e) { console.warn('import', e); return false; }
+}
+
 (async function boot() {
+  // Inside Android app 5, opened once on the old website address: hand the old app's data over, nothing else
+  if (new URLSearchParams(location.search).get('export') === 'apk' && typeof ANDROID_APP?.migrateBegin === 'function') {
+    try { await exportForApk(); } catch { ANDROID_APP.migrateDone(false); }
+    return;
+  }
+  if (LOCAL_APP) {
+    try { if (ANDROID_APP?.migrateAvailable?.()) await importFromOldApp(); } catch {}
+  }
   wire();
   wirePinchZoom();
   blockPageZoom();
@@ -2626,7 +2870,10 @@ function wire() {
   document.querySelectorAll('[data-store]').forEach((el) => { el.textContent = el.dataset.store === 'the' ? STORE_THE : STORE; });
   document.fonts?.load(`600 20px ${STAMP_FONT}`).then(() => { drawPreview(); }).catch(() => {});
   // Offline cache for the browser version; the installed app already carries its files
-  if ('serviceWorker' in navigator && !IS_NATIVE) {
+  if ('serviceWorker' in navigator && LOCAL_APP) {
+    // the APK carries the app itself (and updates it): no website cache here
+    navigator.serviceWorker.getRegistrations?.().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+  } else if ('serviceWorker' in navigator && !IS_NATIVE) {
     const hadSw = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.register('sw.js').catch(() => {});
     // A new version was downloaded in the background: it is used from the next opening
@@ -2646,7 +2893,7 @@ function wire() {
     for (const r of await qAll()) {
       if (!r.complete) {
         const n = await tx('chunks', 'readonly', (s) => s.count(IDBKeyRange.bound(r.uid + '#', r.uid + '#￿')));
-        if (n) { r.total = n; r.complete = true; r.status = 'pending'; r.meta.interrupted = true; await qPut(r); }
+        if (n) { r.meta.interrupted = r.status !== 'review'; r.total = n; r.complete = true; r.status = 'pending'; await qPut(r); }
         else await qRemove(r.uid);
       }
     }
@@ -2657,4 +2904,6 @@ function wire() {
     showLogin();
     $('loginErr').textContent = 'App storage unavailable: ' + e.message;
   }
+  // Android app 5: this version of the app started properly — keep it (an update that never gets here is undone)
+  try { ANDROID_APP?.appReady?.(); } catch {}
 })();

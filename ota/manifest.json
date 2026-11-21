@@ -1,0 +1,9 @@
+{
+ "version": "5.0.0",
+ "minNative": 1,
+ "zip": "bundle-5.0.0.zip",
+ "sha256": "26e86f4198609cd6259e4813db2434ef7337686aa519f6989ecdfe550c95e00d",
+ "size": 333492,
+ "sig": "MEQCIBFTxEl5uyE1HicJPuQhbYADVFVQCK2F/f7yeFu4/d+jAiBVmmQRqkoRoVhCj6vauCNloCBvbvoGitkY+IwNmJQ71A==",
+ "made": "2026-11-21T10:37:03.725Z"
+}

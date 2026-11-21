@@ -445,3 +445,16 @@ img { -webkit-user-drag: none; }
 .perm-row .btn { flex: none; padding: 8px 14px; }
 
 .job-tag.wait { background: transparent; border: 1px solid var(--warn); color: var(--warn); }
+
+/* Android app 5: the camera picture is drawn by Android BEHIND the page, so the camera screen is see-through */
+html.native-cam, html.native-cam body, html.native-cam #cam { background: transparent !important; }
+html.native-cam #video { visibility: hidden; }
+#focusRing { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 2px solid #ffd400; border-radius: 50%; pointer-events: none; z-index: 4; }
+#focusRing.go { animation: focusPulse .9s ease-out forwards; }
+@keyframes focusPulse { 0% { transform: scale(1.4); opacity: 1; } 40% { transform: scale(1); opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
+
+#otaLine { white-space: pre-line; }
+
+/* review: the video just recorded plays here before it is saved */
+#reviewVideo { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+#reviewNote { color: #ddd; text-align: center; padding: 24px; margin: auto 0; }
