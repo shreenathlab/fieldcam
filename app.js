@@ -7,7 +7,7 @@
  */
 'use strict';
 
-const APP_VERSION = '5.0.0';
+const APP_VERSION = '5.1.0';
 /* Server: the Google Apps Script web app (config.js `api`, files go to Google Drive), or the PHP
    API next to the page on the NAS / the saved NAS address in an installed app. */
 const GAS_URL = (window.FIELDCAM_CONFIG?.api || '').trim();
@@ -1337,7 +1337,7 @@ function camW() { return state.native ? state.native.w : $('video').videoWidth; 
 function camH() { return state.native ? state.native.h : $('video').videoHeight; }
 function frameIsLandscape() { return camW() > camH(); }
 /** Camera-app style: phone held sideways while the screen stays upright → the photo is turned to landscape. */
-function sideCapture() { return state.mode === 'photo' && !!camW() && !frameIsLandscape() && sideDir !== 0; }
+function sideCapture() { return !!camW() && !frameIsLandscape() && sideDir !== 0; }   // photos and (5.1) videos
 /** Only FIELD photos must be landscape; Laboratory photos and all videos can be either way. */
 function photoBlocked() { return state.type === 'Field' && state.mode === 'photo' && !!camW() && !frameIsLandscape() && !sideCapture(); }
 /** Turn an upright (portrait) camera picture into the landscape photo the user is holding:
@@ -1354,6 +1354,7 @@ function updateOrientation() {
   if (state.screen !== 'cam') return;
   const blocked = photoBlocked(), side = sideCapture();
   $('sideBadge').hidden = !side || !!openSheetId || !$('review').hidden;
+  $('sideBadge').textContent = state.mode === 'video' ? '✓ Landscape video' : '✓ Landscape photo';
   const cam = $('cam');
   cam.classList.toggle('side-left', side && sideDir > 0);    // turn the small buttons so they read the right way up
   cam.classList.toggle('side-right', side && sideDir < 0);
@@ -1380,7 +1381,8 @@ async function startCamera() {
   stopCamera();
   $('camError').hidden = true;
   // Android app 5: photos with Android's own camera engine (full phone quality); videos and other phones as before
-  if (state.mode === 'photo' && useNativeCam() && await openNativeCam()) return;
+  // 5.1: videos too, when the app can record with Android's camera (stamp burned in by Android)
+  if (useNativeCam() && (state.mode === 'photo' || (typeof ANDROID_APP.camOpenVideo === 'function' && !state.nativeVideoFailed)) && await openNativeCam()) return;
   if (!navigator.mediaDevices?.getUserMedia) return camFail('This browser cannot open the camera. Open the app over https:// in Chrome (Android) or Safari (iPhone).');
   // Phones with several back lenses: use the MAIN camera (not telephoto/macro), so 1.0× looks the same on every phone
   const mainId = state.facing === 'environment' && !state.noMainCam ? mainBackCameraId() : null;
@@ -1447,10 +1449,12 @@ function stopCamera() {
    The APK draws the camera picture behind the (then transparent) page; zoom, flash and focus are the
    camera's own. Photos come back as a file on the app's local address. Anything going wrong → the page's
    camera as before (and Settings has a switch to turn it off on a phone). */
-const nativeCam = { wait: null, shotWait: null, opening: false };
+const nativeCam = { wait: null, shotWait: null, quickWait: null, opening: false };
 window.fcNativeCam = {
   opened(r) { nativeCam.wait?.(r); },
   shot(r) { nativeCam.shotWait?.(r); },
+  quick(r) { nativeCam.quickWait?.(r); },
+  rec(r) { if (r?.state === 'done') finishNativeRecording(r); else nativeCam.recWait?.(r); },
   size(s) { if (state.native && s?.w && s?.h) { state.native.w = s.w; state.native.h = s.h; layoutPreview(); } },
 };
 function useNativeCam() {
@@ -1463,7 +1467,15 @@ async function openNativeCam() {
   nativeCam.opening = true;
   const r = await new Promise((res) => {
     nativeCam.wait = res;
-    try { ANDROID_APP.camOpen(state.facing === 'user'); } catch (e) { res({ ok: false, error: String(e) }); }
+    // app 5.1+: ask the camera for the photo size actually kept (~12 MP for "Device best"), not its 50–200 MP maximum
+    const maxLong = photoConf().max_dim || 4032;
+    try {
+      if (state.mode === 'video') {
+        const vr = state.settings?.video?.max_res || 0;
+        ANDROID_APP.camOpenVideo(state.facing === 'user', vr === 720 ? 854 : vr, state.settings?.video?.aspect === '4:3');
+      } else if (typeof ANDROID_APP.camOpenSized === 'function') ANDROID_APP.camOpenSized(state.facing === 'user', maxLong);
+      else ANDROID_APP.camOpen(state.facing === 'user');
+    } catch (e) { res({ ok: false, error: String(e) }); }
     setTimeout(() => res({ ok: false, error: 'the camera did not answer' }), 8000);
   });
   nativeCam.wait = null;
@@ -1471,13 +1483,14 @@ async function openNativeCam() {
   nativeCam.opening = false;
   if (!r.ok) {
     console.warn('Android camera:', r.error);
-    state.nativeFailed = true;                             // this session: use the page's camera instead
+    if (state.mode === 'video') state.nativeVideoFailed = true;   // this session: videos with the page's recorder
+    else state.nativeFailed = true;                        // this session: use the page's camera instead
     try { ANDROID_APP.camClose(); } catch {}
     return false;
   }
   document.documentElement.classList.add('native-cam');
   state.native = { w: r.size?.w || 4, h: r.size?.h || 3 };
-  state.streamMode = 'photo';
+  state.streamMode = state.mode;
   state.zoomHw = r.zmax > r.zmin ? { min: r.zmin, max: r.zmax } : null;
   state.zoom = 1; applyZoom(1, true);
   $('torchBtn').hidden = !r.torch;
@@ -1862,6 +1875,7 @@ async function onShutter() {
   const miss = detailsMissing();
   if (miss) { toast('Choose the ' + miss + ' first'); openSheet('detailsSheet'); return; }
   state.busy = true; $('shutter').classList.add('busy');
+  let early = null;                                       // preview already shown from the screen picture
   try {
     await state.encoding?.catch(() => {});                // one full-size photo in memory at a time
     const f = $('flash'); f.classList.add('on'); requestAnimationFrame(() => requestAnimationFrame(() => f.classList.remove('on')));
@@ -1870,7 +1884,27 @@ async function onShutter() {
     const when = new Date(), gps = freshGps();
     const turn = sideCapture() ? sideDir : 0;                 // phone held sideways, screen upright
     const ref = previewThumb();                             // what the live picture shows right now
-    const raw = await grabFrame();
+    // The preview appears AT ONCE (owner, 22 Nov): made from what the screen shows, with the stamp, while the
+    // camera's full-quality photo is still being taken and finished in the background
+    const quickP = quickFrame();
+    const rawP = grabFrame();
+    const stamp0 = buildStamp(state.type, when, gps), meta0 = baseMeta('photo', when, gps, stamp0);
+    try {
+      const q = await quickP;
+      const pv = q && previewFromFrame(q, turn, stamp0);
+      if (pv) {
+        const url = URL.createObjectURL(await new Promise((res) => pv.toBlob(res, 'image/jpeg', 0.85)));
+        pv.width = pv.height = 0;
+        let ok, fail; const blobP = new Promise((a, b) => { ok = a; fail = b; });
+        blobP.catch(() => {});
+        early = { kind: 'photo', blobP, meta: meta0, url, ok, fail, early: true };
+        state.pending = early;
+        $('reviewImg').src = url;
+        $('review').hidden = false;
+        pushNav();
+      }
+    } catch (e) { console.warn('quick preview', e); }
+    const raw = await rawP;
     restoreHwZoom();                                        // some phones drop the zoom when taking the photo
     // The photo = exactly what the live picture showed (same shape, same zoom)
     let bmp = digitalCrop(matchPreview(await toBitmap(raw), ref));   // + pinch zoom (digital): keep the zoomed middle part
@@ -1883,8 +1917,7 @@ async function onShutter() {
       if (bmp.height > bmp.width) { bmp.close?.(); throw new Error('Turn your phone sideways — field photos are landscape only'); }
     }
     bmp = aspectCrop(bmp, aspectValue('photo'));          // admin's aspect ratio (4:3, 3:2, 16:9)
-    const stamp = buildStamp(state.type, when, gps);
-    const meta = baseMeta('photo', when, gps, stamp);
+    const stamp = stamp0, meta = meta0;
     const sw = bmp.width, sh = bmp.height;
     const pc = photoConf();
     let scale = pc.max_dim ? Math.min(1, pc.max_dim / Math.max(sw, sh)) : 1;
@@ -1902,6 +1935,7 @@ async function onShutter() {
     // photo is already shown for review (or the shutter is already free again)
     const blobP = new Promise((res) => c.toBlob(res, 'image/jpeg', pc.quality)).then((b) => { c.width = c.height = 0; return b; });
     state.encoding = blobP;
+    if (early) { blobP.then(early.ok, early.fail); return; }   // the preview is already on screen: just hand over the photo
     // Always a preview first (owner, 21 Nov 2026): check the photo for mistakes before it is saved
     const k = Math.min(1, 1600 / Math.max(w, h)), sm = document.createElement('canvas');
     sm.width = Math.round(w * k); sm.height = Math.round(h * k);
@@ -1912,18 +1946,65 @@ async function onShutter() {
     $('review').hidden = false;
     pushNav();
   } catch (e) {
+    if (early) {
+      early.fail(e);
+      if (state.pending === early) goBack();             // close the preview of a photo that could not be made
+    }
     toast(e.message || 'Capture failed', true);
   } finally {
     state.busy = false; $('shutter').classList.remove('busy');
   }
 }
+/** What the screen shows right now, as a picture (for the instant preview), or null. */
+async function quickFrame() {
+  try {
+    if (state.native) {
+      if (typeof ANDROID_APP.camQuick !== 'function') return null;     // app 5.0: no instant picture
+      const r = await new Promise((res) => {
+        nativeCam.quickWait = res;
+        try { ANDROID_APP.camQuick(); } catch { res(null); }
+        setTimeout(() => res(null), 1500);
+      });
+      nativeCam.quickWait = null;
+      if (!r?.ok) return null;
+      let img = await toBitmap(await (await fetch(r.url)).blob());
+      // the screen picture covers the whole camera area: keep only the live picture (as previewRect)
+      const W = window.innerWidth;
+      if (previewRect.w && Math.abs(img.width / img.height - previewRect.w / previewRect.h) > 0.02) {
+        const s = img.width / W, c = document.createElement('canvas');
+        c.width = Math.round(previewRect.w * s); c.height = Math.round(previewRect.h * s);
+        c.getContext('2d').drawImage(img, previewRect.x * s, previewRect.y * s, c.width, c.height, 0, 0, c.width, c.height);
+        img.close?.(); img = c;
+      }
+      return img;
+    }
+    const v = $('video');
+    if (!v.videoWidth) return null;
+    const k = Math.min(1, 1600 / Math.max(v.videoWidth, v.videoHeight)), c = document.createElement('canvas');
+    c.width = Math.round(v.videoWidth * k); c.height = Math.round(v.videoHeight * k);
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    return digitalCrop(c);                                  // pinch zoom (digital) as on the photo
+  } catch { return null; }
+}
+/** Instant preview: the screen picture turned / cut / stamped exactly like the photo will be. */
+function previewFromFrame(img, turn, stamp) {
+  let b = img;
+  if (turn && b.height > b.width) b = rotateSideways(b, turn);
+  if (state.type === 'Field' && b.height > b.width) return null;    // the full photo decides (or explains)
+  b = aspectCrop(b, aspectValue('photo'));
+  const k = Math.min(1, 1600 / Math.max(b.width, b.height)), c = document.createElement('canvas');
+  c.width = Math.round(b.width * k); c.height = Math.round(b.height * k);
+  c.getContext('2d').drawImage(b, 0, 0, c.width, c.height);
+  drawStamp(c.getContext('2d'), c.width, c.height, stamp);
+  return c;
+}
 /* Preview of the video just recorded (same screen as the photo preview): play it, then Save & upload or
    Retake (deletes it, after asking). The phone's Back button keeps it — a long video is never lost by a slip. */
 const VIDEO_PREVIEW_MAX = 400 * 1024 * 1024;
-async function showVideoReview(record, dur) {
+async function showVideoReview(record, dur, fileUrl) {
   const v = $('reviewVideo'), note = $('reviewNote');
-  let url = '';
-  if (record.size <= VIDEO_PREVIEW_MAX) {
+  let url = fileUrl || '';                                // Android's recorder: play the file itself (any length)
+  if (!url && record.size <= VIDEO_PREVIEW_MAX) {
     try {
       const parts = [];
       for (let i = 0; i < record.total; i++) parts.push(await unseal(await chunkGet(record.uid, i)));
@@ -2132,6 +2213,7 @@ function pickVideoType() {
 async function startRecording() {
   const miss = detailsMissing();
   if (miss) { toast('Choose the ' + miss + ' first'); openSheet('detailsSheet'); return; }
+  if (state.native && typeof ANDROID_APP.camRecStart === 'function') return startNativeRecording();
   const vt = pickVideoType();
   if (!vt || !HTMLCanvasElement.prototype.captureStream) { toast('This phone/browser cannot record video in the app', true); return; }
   if (state.streamMode !== 'video') await startCamera();
@@ -2146,7 +2228,10 @@ async function startRecording() {
   const r0 = v.videoWidth / v.videoHeight, vAspect = aspectValue('video');   // admin's aspect ratio for videos
   const crop0 = aspectRect(v.videoWidth, v.videoHeight, vAspect);
   const sc = Math.min(1, maxRes / Math.max(crop0.w, crop0.h));
-  const W = Math.round(crop0.w * sc / 2) * 2, H = Math.round(crop0.h * sc / 2) * 2;
+  // Phone held sideways while the screen stays upright: record a LANDSCAPE video (frames turned), like the camera app
+  const turnV = !frameIsLandscape() && sideDir !== 0 ? sideDir : 0;
+  let W = Math.round(crop0.w * sc / 2) * 2, H = Math.round(crop0.h * sc / 2) * 2;
+  if (turnV) [W, H] = [H, W];
   const canvas = document.createElement('canvas'); canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
   const layer = document.createElement('canvas'); layer.width = W; layer.height = H;
@@ -2219,7 +2304,12 @@ async function startRecording() {
     const dz = digitalZoom();                            // pinch zoom (digital) also applies to videos
     if (Math.abs(vw / vh - r0) < 0.02) {                // same way up as when recording started: keep the chosen shape (+ zoom)
       const a = aspectRect(vw, vh, vAspect);
-      ctx.drawImage(v, a.x + (a.w - a.w / dz) / 2, a.y + (a.h - a.h / dz) / 2, a.w / dz, a.h / dz, 0, 0, W, H);
+      if (turnV) {                                    // upright camera picture → turned into the landscape video
+        ctx.save();
+        if (turnV > 0) { ctx.translate(0, H); ctx.rotate(-Math.PI / 2); } else { ctx.translate(W, 0); ctx.rotate(Math.PI / 2); }
+        ctx.drawImage(v, a.x + (a.w - a.w / dz) / 2, a.y + (a.h - a.h / dz) / 2, a.w / dz, a.h / dz, 0, 0, H, W);
+        ctx.restore();
+      } else ctx.drawImage(v, a.x + (a.w - a.w / dz) / 2, a.y + (a.h - a.h / dz) / 2, a.w / dz, a.h / dz, 0, 0, W, H);
     }
     else {                                          // phone turned while recording: fit without stretching
       const k = Math.min(W / vw, H / vh);
@@ -2245,9 +2335,100 @@ async function startRecording() {
   document.querySelector('.mode-switch').classList.add('locked');
   drawPreview();
 }
+/* ---------- videos with Android's own recorder (app 5.1) ----------
+   The stamp is drawn here exactly as on photos and handed to Android, which burns it into every frame.
+   Phone sideways (screen stays upright) → landscape video. The finished file is copied into the encrypted
+   upload queue and shown in the preview first (Save & upload / Retake). */
+async function startNativeRecording() {
+  const started = new Date(), gps0 = freshGps();
+  const stamp0 = buildStamp(state.type, started, gps0);
+  const meta = baseMeta('video', started, gps0, stamp0);
+  const turn = !frameIsLandscape() && sideDir !== 0 ? sideDir : 0;
+  // stamp picture in the shape of the finished video (≈1080 on the short side)
+  const s = 1080 / Math.min(camW(), camH());
+  let LW = Math.round(camW() * s), LH = Math.round(camH() * s);
+  if (turn) [LW, LH] = [LH, LW];
+  const layer = document.createElement('canvas'); layer.width = LW; layer.height = LH;
+  const lctx = layer.getContext('2d');
+  let lastLines = '';
+  const refresh = () => {
+    const st = buildStamp(state.type, new Date(), freshGps());
+    const key = JSON.stringify(st.lines) + (st.logo ? 1 : 0);
+    if (key === lastLines) return;                       // only when the text changes (time, GPS…)
+    lastLines = key;
+    lctx.clearRect(0, 0, LW, LH); drawStamp(lctx, LW, LH, st);
+    try { ANDROID_APP.camStamp(layer.toDataURL('image/png').split(',')[1]); } catch {}
+  };
+  refresh();
+  const rec = { native: true, uid: meta.uid, meta, started: Date.now(), timers: [], turn };
+  state.rec = rec;
+  const r = await new Promise((res) => {
+    nativeCam.recWait = res;
+    try { ANDROID_APP.camRecStart(turn, state.settings?.video?.audio !== false); } catch (e) { res({ state: 'error', error: String(e) }); }
+    setTimeout(() => res({ state: 'error', error: 'The camera did not start recording' }), 8000);
+  });
+  nativeCam.recWait = null;
+  if (r.state !== 'started') { state.rec = null; toast('Could not start recording: ' + (r.error || ''), true); return; }
+  rec.started = Date.now();
+  rec.timers.push(setInterval(refresh, 1000));
+  rec.timers.push(setInterval(() => {
+    const sec = Math.floor((Date.now() - rec.started) / 1000);
+    $('recTimer').querySelector('span').textContent = `${pad2(Math.floor(sec / 60))}:${pad2(sec % 60)}`;
+    if (sec >= MAX_VIDEO_SEC) { toast('Maximum video length reached'); stopRecording(); }
+  }, 500));
+  navigator.vibrate?.(40);
+  $('shutter').classList.add('recording');
+  $('shutter').setAttribute('aria-label', 'Stop recording');
+  $('recTimer').hidden = false; $('recTimer').querySelector('span').textContent = '00:00';
+  document.querySelector('.mode-switch').classList.add('locked');
+  drawPreview();
+}
+async function finishNativeRecording(r) {
+  const rec = state.rec;
+  if (!rec?.native) return;
+  rec.timers.forEach(clearInterval);
+  $('shutter').classList.remove('recording');
+  $('recTimer').hidden = true;
+  document.querySelector('.mode-switch').classList.remove('locked');
+  if (!r.ok) { state.rec = null; drawPreview(); toast('Video could not be saved: ' + (r.error || ''), true); return; }
+  toast('Saving the video…', false, 60000);
+  try {
+    // copy the finished file into the encrypted upload queue in 5 MB parts (never all in memory)
+    const res = await fetch(r.url);
+    const reader = res.body.getReader();
+    let pending = [], have = 0, idx = 0, size = 0;
+    const put = async (bytes) => { await chunkPut(rec.uid, idx++, await seal(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))); size += bytes.byteLength; };
+    const takeAll = () => { const out = new Uint8Array(have); let o = 0; for (const p of pending) { out.set(p, o); o += p.length; } pending = []; have = 0; return out; };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (value) { pending.push(value); have += value.length; }
+      while (have >= CHUNK) { const all = takeAll(); await put(all.subarray(0, CHUNK)); const rest = all.subarray(CHUNK); if (rest.length) { pending.push(rest); have = rest.length; } }
+      if (done) break;
+    }
+    if (have) await put(takeAll());
+    const meta = rec.meta;
+    meta.duration_s = Math.round((r.ms || (Date.now() - rec.started)) / 100) / 10;
+    if (r.w && r.h) { meta.width = r.w; meta.height = r.h; }
+    const record = { uid: rec.uid, kind: 'video', ext: 'mp4', meta, total: idx, chunk: CHUNK, sent: 0, complete: false, created: rec.started, size, status: 'review', error: '' };
+    await qPut(record);
+    state.rec = null;
+    $('toast').classList.remove('show');
+    drawPreview(); refreshBadge();
+    await showVideoReview(record, meta.duration_s, r.url);
+  } catch (e) {
+    state.rec = null;
+    toast('Video could not be saved: ' + (e.message || e), true);
+  }
+}
 function stopRecording() {
   const rec = state.rec; if (!rec || rec.stopping) return;
   rec.stopping = true;
+  if (rec.native) {                                      // Android's recorder: it reports back with the finished file
+    $('shutter').setAttribute('aria-label', 'Start recording');
+    try { ANDROID_APP.camRecStop(); } catch {}
+    navigator.vibrate?.([30, 60, 30]);
+    return;
+  }
   rec.stopDraw?.();
   $('shutter').setAttribute('aria-label', 'Start recording');
   try { rec.recorder.state !== 'inactive' ? rec.recorder.stop() : rec.recorder.onstop(); } catch { rec.recorder.onstop?.(); }

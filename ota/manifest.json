@@ -1,9 +1,9 @@
 {
- "version": "5.0.0",
+ "version": "5.1.0",
  "minNative": 1,
- "zip": "bundle-5.0.0.zip",
- "sha256": "26e86f4198609cd6259e4813db2434ef7337686aa519f6989ecdfe550c95e00d",
- "size": 333492,
- "sig": "MEQCIBFTxEl5uyE1HicJPuQhbYADVFVQCK2F/f7yeFu4/d+jAiBVmmQRqkoRoVhCj6vauCNloCBvbvoGitkY+IwNmJQ71A==",
- "made": "2026-11-21T10:37:03.725Z"
+ "zip": "bundle-5.1.0.zip",
+ "sha256": "909277e9d9520f49e7db80b6729e734ce6f4856246f0fabc98cfd6d75fffd80a",
+ "size": 336154,
+ "sig": "MEUCIQCh8rpdNFUzW2c1CNq3rbVkTg3Y9+omUAbljjUIJAHpggIgNcoZSt8osPhXuNf7loHWJ1m2X5PC0KoC5ssMWSgGdgI=",
+ "made": "2026-11-21T11:43:24.284Z"
 }
